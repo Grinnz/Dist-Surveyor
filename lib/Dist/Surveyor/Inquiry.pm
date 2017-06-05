@@ -56,12 +56,6 @@ our ($DEBUG, $VERBOSE);
 *DEBUG = \$::DEBUG;
 *VERBOSE = \$::VERBOSE;
 
-my $ua = HTTP::Tiny->new(
-    agent => $0,
-    timeout => 10,
-    keep_alive => 1, 
-);
-
 require Exporter;
 our @ISA = qw{Exporter};
 our @EXPORT = qw{
@@ -70,6 +64,49 @@ our @EXPORT = qw{
     get_module_versions_in_release
     get_release_info
 };
+
+my ($ua, $wget, $curl);
+if (HTTP::Tiny->can_ssl) {
+    $ua = HTTP::Tiny->new(
+        agent => $0,
+        timeout => 10,
+        keep_alive => 1, 
+    );
+} else { # for fatpacking support
+    require File::Which;
+    require IPC::System::Simple;
+    $wget = File::Which::which('wget');
+    $curl = File::Which::which('curl');
+}
+
+sub _https_request {
+    my ($method, $url, $headers, $content) = @_;
+    $headers ||= {};
+    $method = uc($method || 'GET');
+    if (defined $ua) {
+        my %options;
+        $options{headers} = $headers if %$headers;
+        $options{content} = $content if defined $content;
+        my $response = $ua->request($method, $url, \%options);
+        unless ($response->{success}) {
+            die "Transport error: $response->{content}\n" if $response->{status} == 599;
+            die "HTTP error: $response->{status} $response->{reason}\n";
+        }
+        return $response->{content};
+    } elsif (defined $wget) {
+        my @args = ('-q', '-O', '-', '-U', $0, '-T', 10, '--method', $method);
+        push @args, '--header', "$_: $headers->{$_}" for keys %$headers;
+        push @args, '--body-data', $content if defined $content;
+        return IPC::System::Simple::capturex($wget, @args, $url);
+    } elsif (defined $curl) {
+        my @args = ('-s', '-S', '-L', '-A', $0, '--connect-timeout', 10, '-X', $method);
+        push @args, '-H', "$_: $headers->{$_}" for keys %$headers;
+        push @args, '--data-raw', $content if defined $content;
+        return IPC::System::Simple::capturex($curl, @args, $url);
+    } else {
+        die "None of IO::Socket::SSL, wget, or curl are available; cannot make HTTPS requests.";
+    }
+}
 
 # caching via persistent memoize
 
@@ -133,9 +170,8 @@ Dies on HTTP error, and warns on empty response.
 sub get_release_info {
     my ($author, $release) = @_;
     $metacpan_calls++;
-    my $response = $ua->get("https://fastapi.metacpan.org/v1/release/$author/$release");
-    die "$response->{status} $response->{reason}" unless $response->{success};
-    my $release_data = decode_json $response->{content};
+    my $response = _https_request(GET => "https://fastapi.metacpan.org/v1/release/$author/$release");
+    my $release_data = decode_json $response;
     if (!$release_data) {
         warn "Can't find release details for $author/$release - SKIPPED!\n";
         return; # XXX could fake some of $release_data instead
@@ -198,13 +234,10 @@ sub get_candidate_cpan_dist_releases {
             )]
     };
 
-    my $response = $ua->post(
-        'https://fastapi.metacpan.org/v1/file', {
-            headers => { 'Content-Type' => 'application/json;charset=UTF-8' },
-            content => JSON->new->utf8->canonical->encode($query),
-        }
+    my $response = _https_request(POST => 'https://fastapi.metacpan.org/v1/file',
+        { 'Content-Type' => 'application/json;charset=UTF-8' },
+        JSON->new->utf8->canonical->encode($query),
     );
-    die "$response->{status} $response->{reason}" unless $response->{success};
     return _process_response($funcstr, $response);
 }
 
@@ -243,13 +276,10 @@ sub get_candidate_cpan_dist_releases_fallback {
             release _parent author version version_numified module.version 
             module.version_numified date stat.mtime distribution path)]
     };
-    my $response = $ua->post(
-        'https://fastapi.metacpan.org/v1/file', {
-            headers => { 'Content-Type' => 'application/json;charset=UTF-8' },
-            content => JSON->new->utf8->canonical->encode($query),
-        }
+    my $response = _https_request('https://fastapi.metacpan.org/v1/file',
+        { 'Content-Type' => 'application/json;charset=UTF-8' },
+        JSON->new->utf8->canonical->encode($query),
     );
-    die "$response->{status} $response->{reason}" unless $response->{success};
     return _process_response("get_candidate_cpan_dist_releases_fallback($module, $version)", $response);
 }
 
@@ -280,7 +310,7 @@ sub _prepare_version_query {
 sub _process_response {
     my ($funcname, $response) = @_;
 
-    my $results = decode_json $response->{content};
+    my $results = decode_json $response;
 
     my $hits = $results->{hits}{hits};
     die "$funcname: too many results (>$metacpan_size)"
@@ -347,14 +377,11 @@ sub get_module_versions_in_release {
             "fields" => ["path","name","stat.size"],
             "inner_hits" => {"module" => {"path" => {"module" => {}}}},
         }; 
-        my $response = $ua->post(
-            'https://fastapi.metacpan.org/v1/file', {
-                headers => { 'Content-Type' => 'application/json;charset=UTF-8' },
-                content => JSON->new->utf8->canonical->encode($query),
-            }
+        my $response = _https_request(POST => 'https://fastapi.metacpan.org/v1/file',
+            { 'Content-Type' => 'application/json;charset=UTF-8' },
+            JSON->new->utf8->canonical->encode($query),
         );
-        die "$response->{status} $response->{reason}" unless $response->{success};
-        decode_json $response->{content};
+        decode_json $response;
     };
     if (not $results) {
         warn "Failed get_module_versions_in_release for $author/$release: $@";

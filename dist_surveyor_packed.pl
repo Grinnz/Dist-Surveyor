@@ -932,12 +932,6 @@ $fatpacked{"Dist/Surveyor/Inquiry.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"
   *DEBUG = \$::DEBUG;
   *VERBOSE = \$::VERBOSE;
   
-  my $ua = HTTP::Tiny->new(
-      agent => $0,
-      timeout => 10,
-      keep_alive => 1, 
-  );
-  
   require Exporter;
   our @ISA = qw{Exporter};
   our @EXPORT = qw{
@@ -946,6 +940,49 @@ $fatpacked{"Dist/Surveyor/Inquiry.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"
       get_module_versions_in_release
       get_release_info
   };
+  
+  my ($ua, $wget, $curl);
+  if (HTTP::Tiny->can_ssl) {
+      $ua = HTTP::Tiny->new(
+          agent => $0,
+          timeout => 10,
+          keep_alive => 1, 
+      );
+  } else { # for fatpacking support
+      require File::Which;
+      require IPC::System::Simple;
+      $wget = File::Which::which('wget');
+      $curl = File::Which::which('curl');
+  }
+  
+  sub _https_request {
+      my ($method, $url, $headers, $content) = @_;
+      $headers ||= {};
+      $method = uc($method || 'GET');
+      if (defined $ua) {
+          my %options;
+          $options{headers} = $headers if %$headers;
+          $options{content} = $content if defined $content;
+          my $response = $ua->request($method, $url, \%options);
+          unless ($response->{success}) {
+              die "Transport error: $response->{content}\n" if $response->{status} == 599;
+              die "HTTP error: $response->{status} $response->{reason}\n";
+          }
+          return $response->{content};
+      } elsif (defined $wget) {
+          my @args = ('-q', '-O', '-', '-U', $0, '-T', 10, '--method', $method);
+          push @args, '--header', "$_: $headers->{$_}" for keys %$headers;
+          push @args, '--body-data', $content if defined $content;
+          return IPC::System::Simple::capturex($wget, @args, $url);
+      } elsif (defined $curl) {
+          my @args = ('-s', '-S', '-L', '-A', $0, '--connect-timeout', 10, '-X', $method);
+          push @args, '-H', "$_: $headers->{$_}" for keys %$headers;
+          push @args, '--data-raw', $content if defined $content;
+          return IPC::System::Simple::capturex($curl, @args, $url);
+      } else {
+          die "None of IO::Socket::SSL, wget, or curl are available; cannot make HTTPS requests.";
+      }
+  }
   
   # caching via persistent memoize
   
@@ -1009,9 +1046,8 @@ $fatpacked{"Dist/Surveyor/Inquiry.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"
   sub get_release_info {
       my ($author, $release) = @_;
       $metacpan_calls++;
-      my $response = $ua->get("https://fastapi.metacpan.org/v1/release/$author/$release");
-      die "$response->{status} $response->{reason}" unless $response->{success};
-      my $release_data = decode_json $response->{content};
+      my $response = _https_request(GET => "https://fastapi.metacpan.org/v1/release/$author/$release");
+      my $release_data = decode_json $response;
       if (!$release_data) {
           warn "Can't find release details for $author/$release - SKIPPED!\n";
           return; # XXX could fake some of $release_data instead
@@ -1074,13 +1110,10 @@ $fatpacked{"Dist/Surveyor/Inquiry.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"
               )]
       };
   
-      my $response = $ua->post(
-          'https://fastapi.metacpan.org/v1/file', {
-              headers => { 'Content-Type' => 'application/json;charset=UTF-8' },
-              content => JSON->new->utf8->canonical->encode($query),
-          }
+      my $response = _https_request(POST => 'https://fastapi.metacpan.org/v1/file',
+          { 'Content-Type' => 'application/json;charset=UTF-8' },
+          JSON->new->utf8->canonical->encode($query),
       );
-      die "$response->{status} $response->{reason}" unless $response->{success};
       return _process_response($funcstr, $response);
   }
   
@@ -1119,13 +1152,10 @@ $fatpacked{"Dist/Surveyor/Inquiry.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"
               release _parent author version version_numified module.version 
               module.version_numified date stat.mtime distribution path)]
       };
-      my $response = $ua->post(
-          'https://fastapi.metacpan.org/v1/file', {
-              headers => { 'Content-Type' => 'application/json;charset=UTF-8' },
-              content => JSON->new->utf8->canonical->encode($query),
-          }
+      my $response = _https_request('https://fastapi.metacpan.org/v1/file',
+          { 'Content-Type' => 'application/json;charset=UTF-8' },
+          JSON->new->utf8->canonical->encode($query),
       );
-      die "$response->{status} $response->{reason}" unless $response->{success};
       return _process_response("get_candidate_cpan_dist_releases_fallback($module, $version)", $response);
   }
   
@@ -1156,7 +1186,7 @@ $fatpacked{"Dist/Surveyor/Inquiry.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"
   sub _process_response {
       my ($funcname, $response) = @_;
   
-      my $results = decode_json $response->{content};
+      my $results = decode_json $response;
   
       my $hits = $results->{hits}{hits};
       die "$funcname: too many results (>$metacpan_size)"
@@ -1223,14 +1253,11 @@ $fatpacked{"Dist/Surveyor/Inquiry.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"
               "fields" => ["path","name","stat.size"],
               "inner_hits" => {"module" => {"path" => {"module" => {}}}},
           }; 
-          my $response = $ua->post(
-              'https://fastapi.metacpan.org/v1/file', {
-                  headers => { 'Content-Type' => 'application/json;charset=UTF-8' },
-                  content => JSON->new->utf8->canonical->encode($query),
-              }
+          my $response = _https_request(POST => 'https://fastapi.metacpan.org/v1/file',
+              { 'Content-Type' => 'application/json;charset=UTF-8' },
+              JSON->new->utf8->canonical->encode($query),
           );
-          die "$response->{status} $response->{reason}" unless $response->{success};
-          decode_json $response->{content};
+          decode_json $response;
       };
       if (not $results) {
           warn "Failed get_module_versions_in_release for $author/$release: $@";
@@ -1676,6 +1703,345 @@ $fatpacked{"Dist/Surveyor/MakeCpan.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\
   =cut
 DIST_SURVEYOR_MAKECPAN
 
+$fatpacked{"File/Which.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'FILE_WHICH';
+  package File::Which;
+  
+  use strict;
+  use warnings;
+  use Exporter   ();
+  use File::Spec ();
+  
+  # ABSTRACT: Perl implementation of the which utility as an API
+  our $VERSION = '1.21'; # VERSION
+  
+  
+  our @ISA       = 'Exporter';
+  our @EXPORT    = 'which';
+  our @EXPORT_OK = 'where';
+  
+  use constant IS_VMS => ($^O eq 'VMS');
+  use constant IS_MAC => ($^O eq 'MacOS');
+  use constant IS_DOS => ($^O eq 'MSWin32' or $^O eq 'dos' or $^O eq 'os2');
+  use constant IS_CYG => ($^O eq 'cygwin');
+  
+  # For Win32 systems, stores the extensions used for
+  # executable files
+  # For others, the empty string is used
+  # because 'perl' . '' eq 'perl' => easier
+  my @PATHEXT = ('');
+  if ( IS_DOS ) {
+    # WinNT. PATHEXT might be set on Cygwin, but not used.
+    if ( $ENV{PATHEXT} ) {
+      push @PATHEXT, split ';', $ENV{PATHEXT};
+    } else {
+      # Win9X or other: doesn't have PATHEXT, so needs hardcoded.
+      push @PATHEXT, qw{.com .exe .bat};
+    }
+  } elsif ( IS_VMS ) {
+    push @PATHEXT, qw{.exe .com};
+  } elsif ( IS_CYG ) {
+    # See this for more info
+    # http://cygwin.com/cygwin-ug-net/using-specialnames.html#pathnames-exe
+    push @PATHEXT, qw{.exe .com};
+  }
+  
+  
+  sub which {
+    my ($exec) = @_;
+  
+    return undef unless defined $exec;
+    return undef if $exec eq '';
+  
+    my $all = wantarray;
+    my @results = ();
+  
+    # check for aliases first
+    if ( IS_VMS ) {
+      my $symbol = `SHOW SYMBOL $exec`;
+      chomp($symbol);
+      unless ( $? ) {
+        return $symbol unless $all;
+        push @results, $symbol;
+      }
+    }
+    if ( IS_MAC ) {
+      my @aliases = split /\,/, $ENV{Aliases};
+      foreach my $alias ( @aliases ) {
+        # This has not been tested!!
+        # PPT which says MPW-Perl cannot resolve `Alias $alias`,
+        # let's just hope it's fixed
+        if ( lc($alias) eq lc($exec) ) {
+          chomp(my $file = `Alias $alias`);
+          last unless $file;  # if it failed, just go on the normal way
+          return $file unless $all;
+          push @results, $file;
+          # we can stop this loop as if it finds more aliases matching,
+          # it'll just be the same result anyway
+          last;
+        }
+      }
+    }
+  
+    return $exec
+            if !IS_VMS and !IS_MAC and !IS_DOS and $exec =~ /\// and -f $exec and -x $exec;
+  
+    my @path = File::Spec->path;
+    if ( IS_DOS or IS_VMS or IS_MAC ) {
+      unshift @path, File::Spec->curdir;
+    }
+  
+    foreach my $base ( map { File::Spec->catfile($_, $exec) } @path ) {
+      for my $ext ( @PATHEXT ) {
+        my $file = $base.$ext;
+  
+        # We don't want dirs (as they are -x)
+        next if -d $file;
+  
+        if (
+          # Executable, normal case
+          -x _
+          or (
+            # MacOS doesn't mark as executable so we check -e
+            IS_MAC
+            ||
+            (
+              ( IS_DOS or IS_CYG )
+              and
+              grep {
+                $file =~ /$_\z/i
+              } @PATHEXT[1..$#PATHEXT]
+            )
+            # DOSish systems don't pass -x on
+            # non-exe/bat/com files. so we check -e.
+            # However, we don't want to pass -e on files
+            # that aren't in PATHEXT, like README.
+            and -e _
+          )
+        ) {
+          return $file unless $all;
+          push @results, $file;
+        }
+      }
+    }
+  
+    if ( $all ) {
+      return @results;
+    } else {
+      return undef;
+    }
+  }
+  
+  
+  sub where {
+    # force wantarray
+    my @res = which($_[0]);
+    return @res;
+  }
+  
+  1;
+  
+  __END__
+  
+  =pod
+  
+  =encoding UTF-8
+  
+  =head1 NAME
+  
+  File::Which - Perl implementation of the which utility as an API
+  
+  =head1 VERSION
+  
+  version 1.21
+  
+  =head1 SYNOPSIS
+  
+   use File::Which;                  # exports which()
+   use File::Which qw(which where);  # exports which() and where()
+   
+   my $exe_path = which 'perldoc';
+   
+   my @paths = where 'perl';
+   # Or
+   my @paths = which 'perl'; # an array forces search for all of them
+  
+  =head1 DESCRIPTION
+  
+  L<File::Which> finds the full or relative paths to executable programs on
+  the system.  This is normally the function of C<which> utility.  C<which> is
+  typically implemented as either a program or a built in shell command.  On
+  some platforms, such as Microsoft Windows it is not provided as part of the
+  core operating system.  This module provides a consistent API to this
+  functionality regardless of the underlying platform.
+  
+  The focus of this module is correctness and portability.  As a consequence
+  platforms where the current directory is implicitly part of the search path
+  such as Microsoft Windows will find executables in the current directory,
+  whereas on platforms such as UNIX where this is not the case executables 
+  in the current directory will only be found if the current directory is
+  explicitly added to the path.
+  
+  If you need a portable C<which> on the command line in an environment that
+  does not provide it, install L<App::pwhich> which provides a command line
+  interface to this API.
+  
+  =head2 Implementations
+  
+  L<File::Which> searches the directories of the user's C<PATH> (the current
+  implementation uses L<File::Spec#path> to determine the correct C<PATH>),
+  looking for executable files having the name specified as a parameter to
+  L</which>. Under Win32 systems, which do not have a notion of directly
+  executable files, but uses special extensions such as C<.exe> and C<.bat>
+  to identify them, C<File::Which> takes extra steps to assure that
+  you will find the correct file (so for example, you might be searching for
+  C<perl>, it'll try F<perl.exe>, F<perl.bat>, etc.)
+  
+  =head3 Linux, *BSD and other UNIXes
+  
+  There should not be any surprises here.  The current directory will not be
+  searched unless it is explicitly added to the path.
+  
+  =head3 Modern Windows (including NT, XP, Vista, 7, 8, 10 etc)
+  
+  Windows NT has a special environment variable called C<PATHEXT>, which is used
+  by the shell to look for executable files. Usually, it will contain a list in
+  the form C<.EXE;.BAT;.COM;.JS;.VBS> etc. If C<File::Which> finds such an
+  environment variable, it parses the list and uses it as the different
+  extensions.
+  
+  =head3 Cygwin
+  
+  Cygwin provides a Unix-like environment for Microsoft Windows users.  In most
+  ways it works like other Unix and Unix-like environments, but in a few key
+  aspects it works like Windows.  As with other Unix environments, the current
+  directory is not included in the search unless it is explicitly included in
+  the search path.  Like on Windows, files with C<.EXE> or <.BAT> extensions will
+  be discovered even if they are not part of the query.  C<.COM> or extensions
+  specified using the C<PATHEXT> environment variable will NOT be discovered
+  without the fully qualified name, however.
+  
+  =head3 Windows 95, 98, ME, MS-DOS, OS/2
+  
+  This set of operating systems don't have the C<PATHEXT> variable, and usually
+  you will find executable files there with the extensions C<.exe>, C<.bat> and
+  (less likely) C<.com>. C<File::Which> uses this hardcoded list if it's running
+  under Win32 but does not find a C<PATHEXT> variable.
+  
+  As of 2015 none of these platforms are tested frequently (or perhaps ever),
+  but the current maintainer is determined not to intentionally remove support
+  for older operating systems.
+  
+  =head3 VMS
+  
+  Same case as Windows 9x: uses C<.exe> and C<.com> (in that order).
+  
+  As of 2015 the current maintainer does not test on VMS, and is in fact not
+  certain it has ever been tested on VMS.  If this platform is important to you
+  and you can help me verify and or support it on that platform please contact
+  me.
+  
+  =head1 FUNCTIONS
+  
+  =head2 which
+  
+   my $path = which $short_exe_name;
+   my @paths = which $short_exe_name;
+  
+  Exported by default.
+  
+  C<$short_exe_name> is the name used in the shell to call the program (for
+  example, C<perl>).
+  
+  If it finds an executable with the name you specified, C<which()> will return
+  the absolute path leading to this executable (for example, F</usr/bin/perl> or
+  F<C:\Perl\Bin\perl.exe>).
+  
+  If it does I<not> find the executable, it returns C<undef>.
+  
+  If C<which()> is called in list context, it will return I<all> the
+  matches.
+  
+  =head2 where
+  
+   my @paths = where $short_exe_name;
+  
+  Not exported by default.
+  
+  Same as L</which> in array context. Same as the
+  C<where> utility, will return an array containing all the path names
+  matching C<$short_exe_name>.
+  
+  =head1 CAVEATS
+  
+  This module has no non-core requirements for Perl 5.6.2 and better.
+  
+  This module is fully supported back to Perl 5.8.1.  It may work on 5.8.0.  
+  It should work on Perl 5.6.x and I may even test on 5.6.2.  I will accept
+  patches to maintain compatibility for such older Perls, but you may
+  need to fix it on 5.6.x / 5.8.0 and send me a patch.
+  
+  Not tested on VMS although there is platform specific code
+  for those. Anyone who haves a second would be very kind to send me a
+  report of how it went.
+  
+  =head1 SUPPORT
+  
+  Bugs should be reported via the GitHub issue tracker
+  
+  L<https://github.com/plicease/File-Which/issues>
+  
+  For other issues, contact the maintainer.
+  
+  =head1 SEE ALSO
+  
+  =over 4
+  
+  =item L<pwhich>, L<App::pwhich>
+  
+  Command line interface to this module.
+  
+  =item L<IPC::Cmd>
+  
+  Comes with a C<can_run> function with slightly different semantics that
+  the traditional UNIX where.  It will find executables in the current
+  directory, even though the current directory is not searched for by
+  default on Unix.
+  
+  =item L<Devel::CheckBin>
+  
+  This module purports to "check that a command is available", but does not
+  provide any documentation on how you might use it.
+  
+  =back
+  
+  =head1 AUTHORS
+  
+  =over 4
+  
+  =item *
+  
+  Per Einar Ellefsen <pereinar@cpan.org>
+  
+  =item *
+  
+  Adam Kennedy <adamk@cpan.org>
+  
+  =item *
+  
+  Graham Ollis <plicease@cpan.org>
+  
+  =back
+  
+  =head1 COPYRIGHT AND LICENSE
+  
+  This software is copyright (c) 2002 by Per Einar Ellefsen <pereinar@cpan.org>.
+  
+  This is free software; you can redistribute it and/or modify it under
+  the same terms as the Perl 5 programming language system itself.
+  
+  =cut
+FILE_WHICH
+
 $fatpacked{"HTTP/Tiny.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'HTTP_TINY';
   # vim: ts=4 sts=4 sw=4 et:
   package HTTP::Tiny;
@@ -1683,9 +2049,9 @@ $fatpacked{"HTTP/Tiny.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'HTTP_
   use warnings;
   # ABSTRACT: A small, simple, correct HTTP/1.1 client
   
-  our $VERSION = '0.058';
+  our $VERSION = '0.070';
   
-  use Carp ();
+  sub _croak { require Carp; Carp::croak(@_) }
   
   #pod =method new
   #pod
@@ -1789,7 +2155,7 @@ $fatpacked{"HTTP/Tiny.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'HTTP_
   
       my $self = {
           max_redirect => 5,
-          timeout      => 60,
+          timeout      => defined $args{timeout} ? $args{timeout} : 60,
           keep_alive   => 1,
           verify_SSL   => $args{verify_SSL} || $args{verify_ssl} || 0, # no verification by default
           no_proxy     => $ENV{no_proxy},
@@ -1886,7 +2252,7 @@ $fatpacked{"HTTP/Tiny.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'HTTP_
       sub $sub_name {
           my (\$self, \$url, \$args) = \@_;
           \@_ == 2 || (\@_ == 3 && ref \$args eq 'HASH')
-          or Carp::croak(q/Usage: \$http->$sub_name(URL, [HASHREF])/ . "\n");
+          or _croak(q/Usage: \$http->$sub_name(URL, [HASHREF])/ . "\n");
           return \$self->request('$req_method', \$url, \$args || {});
       }
   HERE
@@ -1915,7 +2281,7 @@ $fatpacked{"HTTP/Tiny.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'HTTP_
   sub post_form {
       my ($self, $url, $data, $args) = @_;
       (@_ == 3 || @_ == 4 && ref $args eq 'HASH')
-          or Carp::croak(q/Usage: $http->post_form(URL, DATAREF, [HASHREF])/ . "\n");
+          or _croak(q/Usage: $http->post_form(URL, DATAREF, [HASHREF])/ . "\n");
   
       my $headers = {};
       while ( my ($key, $value) = each %{$args->{headers} || {}} ) {
@@ -1960,7 +2326,16 @@ $fatpacked{"HTTP/Tiny.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'HTTP_
   sub mirror {
       my ($self, $url, $file, $args) = @_;
       @_ == 3 || (@_ == 4 && ref $args eq 'HASH')
-        or Carp::croak(q/Usage: $http->mirror(URL, FILE, [HASHREF])/ . "\n");
+        or _croak(q/Usage: $http->mirror(URL, FILE, [HASHREF])/ . "\n");
+  
+      if ( exists $args->{headers} ) {
+          my $headers = {};
+          while ( my ($key, $value) = each %{$args->{headers} || {}} ) {
+              $headers->{lc $key} = $value;
+          }
+          $args->{headers} = $headers;
+      }
+  
       if ( -e $file and my $mtime = (stat($file))[9] ) {
           $args->{headers}{'if-modified-since'} ||= $self->_http_date($mtime);
       }
@@ -1968,16 +2343,16 @@ $fatpacked{"HTTP/Tiny.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'HTTP_
   
       require Fcntl;
       sysopen my $fh, $tempfile, Fcntl::O_CREAT()|Fcntl::O_EXCL()|Fcntl::O_WRONLY()
-         or Carp::croak(qq/Error: Could not create temporary file $tempfile for downloading: $!\n/);
+         or _croak(qq/Error: Could not create temporary file $tempfile for downloading: $!\n/);
       binmode $fh;
       $args->{data_callback} = sub { print {$fh} $_[0] };
       my $response = $self->request('GET', $url, $args);
       close $fh
-          or Carp::croak(qq/Error: Caught error closing temporary file $tempfile: $!\n/);
+          or _croak(qq/Error: Caught error closing temporary file $tempfile: $!\n/);
   
       if ( $response->{success} ) {
           rename $tempfile, $file
-              or Carp::croak(qq/Error replacing $file with $tempfile: $!\n/);
+              or _croak(qq/Error replacing $file with $tempfile: $!\n/);
           my $lm = $response->{headers}{'last-modified'};
           if ( $lm and my $mtime = $self->_parse_http_date($lm) ) {
               utime $mtime, $mtime, $file;
@@ -2087,7 +2462,7 @@ $fatpacked{"HTTP/Tiny.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'HTTP_
   sub request {
       my ($self, $method, $url, $args) = @_;
       @_ == 3 || (@_ == 4 && ref $args eq 'HASH')
-        or Carp::croak(q/Usage: $http->request(METHOD, URL, [HASHREF])/ . "\n");
+        or _croak(q/Usage: $http->request(METHOD, URL, [HASHREF])/ . "\n");
       $args ||= {}; # we keep some state in this during _request
   
       # RFC 2616 Section 8.1.4 mandates a single retry on broken socket
@@ -2101,6 +2476,7 @@ $fatpacked{"HTTP/Tiny.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'HTTP_
       if (my $e = $@) {
           # maybe we got a response hash thrown from somewhere deep
           if ( ref $e eq 'HASH' && exists $e->{status} ) {
+              $e->{redirects} = delete $args->{_redirects} if @{ $args->{_redirects} || []};
               return $e;
           }
   
@@ -2115,7 +2491,8 @@ $fatpacked{"HTTP/Tiny.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'HTTP_
               headers => {
                   'content-type'   => 'text/plain',
                   'content-length' => length $e,
-              }
+              },
+              ( @{$args->{_redirects} || []} ? (redirects => delete $args->{_redirects}) : () ),
           };
       }
       return $response;
@@ -2138,13 +2515,13 @@ $fatpacked{"HTTP/Tiny.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'HTTP_
   sub www_form_urlencode {
       my ($self, $data) = @_;
       (@_ == 2 && ref $data)
-          or Carp::croak(q/Usage: $http->www_form_urlencode(DATAREF)/ . "\n");
+          or _croak(q/Usage: $http->www_form_urlencode(DATAREF)/ . "\n");
       (ref $data eq 'HASH' || ref $data eq 'ARRAY')
-          or Carp::croak("form data must be a hash or array reference\n");
+          or _croak("form data must be a hash or array reference\n");
   
       my @params = ref $data eq 'HASH' ? %$data : @$data;
       @params % 2 == 0
-          or Carp::croak("form data reference must have an even number of terms\n");
+          or _croak("form data reference must have an even number of terms\n");
   
       my @terms;
       while( @params ) {
@@ -2183,6 +2560,8 @@ $fatpacked{"HTTP/Tiny.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'HTTP_
       my($ok, $reason) = (1, '');
   
       # Need IO::Socket::SSL 1.42 for SSL_create_ctx_callback
+      local @INC = @INC;
+      pop @INC if $INC[-1] eq '.';
       unless (eval {require IO::Socket::SSL; IO::Socket::SSL->VERSION(1.42)}) {
           $ok = 0;
           $reason .= qq/IO::Socket::SSL 1.42 must be installed for https support\n/;
@@ -2360,14 +2739,14 @@ $fatpacked{"HTTP/Tiny.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'HTTP_
   
       my @proxy_vars;
       if ( $request->{scheme} eq 'https' ) {
-          Carp::croak(qq{No https_proxy defined}) unless $self->{https_proxy};
+          _croak(qq{No https_proxy defined}) unless $self->{https_proxy};
           @proxy_vars = $self->_split_proxy( https_proxy => $self->{https_proxy} );
           if ( $proxy_vars[0] eq 'https' ) {
-              Carp::croak(qq{Can't proxy https over https: $request->{uri} via $self->{https_proxy}});
+              _croak(qq{Can't proxy https over https: $request->{uri} via $self->{https_proxy}});
           }
       }
       else {
-          Carp::croak(qq{No http_proxy defined}) unless $self->{http_proxy};
+          _croak(qq{No http_proxy defined}) unless $self->{http_proxy};
           @proxy_vars = $self->_split_proxy( http_proxy => $self->{http_proxy} );
       }
   
@@ -2399,7 +2778,7 @@ $fatpacked{"HTTP/Tiny.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'HTTP_
           defined($scheme) && length($scheme) && length($host) && length($port)
           && $path_query eq '/'
       ) {
-          Carp::croak(qq{$type URL must be in format http[s]://[auth@]<host>:<port>/\n});
+          _croak(qq{$type URL must be in format http[s]://[auth@]<host>:<port>/\n});
       }
   
       return ($scheme, $host, $port, $auth);
@@ -2548,7 +2927,7 @@ $fatpacked{"HTTP/Tiny.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'HTTP_
   
       # duck typing
       for my $method ( qw/add cookie_header/ ) {
-          Carp::croak(qq/Cookie jar must provide the '$method' method\n/)
+          _croak(qq/Cookie jar must provide the '$method' method\n/)
               unless ref($jar) && ref($jar)->can($method);
       }
   
@@ -3130,8 +3509,12 @@ $fatpacked{"HTTP/Tiny.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'HTTP_
           $self->write($chunk);
       }
       $self->write("0\x0D\x0A");
-      $self->write_header_lines($request->{trailer_cb}->())
-          if ref $request->{trailer_cb} eq 'CODE';
+      if ( ref $request->{trailer_cb} eq 'CODE' ) {
+          $self->write_header_lines($request->{trailer_cb}->())
+      }
+      else {
+          $self->write("\x0D\x0A");
+      }
       return $len;
   }
   
@@ -3247,6 +3630,8 @@ $fatpacked{"HTTP/Tiny.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'HTTP_
           return $ca_file;
       }
   
+      local @INC = @INC;
+      pop @INC if $INC[-1] eq '.';
       return Mozilla::CA::SSL_ca_file()
           if eval { require Mozilla::CA; 1 };
   
@@ -3318,7 +3703,7 @@ $fatpacked{"HTTP/Tiny.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'HTTP_
   
   =head1 VERSION
   
-  version 0.058
+  version 0.070
   
   =head1 SYNOPSIS
   
@@ -3941,7 +4326,7 @@ $fatpacked{"HTTP/Tiny.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'HTTP_
   
   =head1 CONTRIBUTORS
   
-  =for stopwords Alan Gardner Alessandro Ghedini A. Sinan Unur Brad Gilbert brian m. carlson Chris Nehren Weyl Claes Jakobsson Clinton Gormley David Golden Dean Pearce Edward Zborowski James Raspass Jeremy Mates Jess Robinson Lukas Eklund Martin J. Evans Martin-Louis Bright Mike Doherty Olaf Alders Olivier Mengué Petr Písař SkyMarshal Sören Kornetzki Syohei YOSHIDA Tatsuhiko Miyagawa Tom Hukins Tony Cook
+  =for stopwords Alan Gardner Alessandro Ghedini A. Sinan Unur Brad Gilbert brian m. carlson Chris Nehren Weyl Claes Jakobsson Clinton Gormley Craig Berry David Golden Dean Pearce Edward Zborowski James Raspass Jeremy Mates Jess Robinson Karen Etheridge Lukas Eklund Martin J. Evans Martin-Louis Bright Mike Doherty Nicolas Rochelemagne Olaf Alders Olivier Mengué Petr Písař SkyMarshal Sören Kornetzki Steve Grazzini Syohei YOSHIDA Tatsuhiko Miyagawa Tom Hukins Tony Cook
   
   =over 4
   
@@ -3983,6 +4368,10 @@ $fatpacked{"HTTP/Tiny.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'HTTP_
   
   =item *
   
+  Craig A. Berry <craigberry@mac.com>
+  
+  =item *
+  
   David Golden <xdg@xdg.me>
   
   =item *
@@ -4007,6 +4396,10 @@ $fatpacked{"HTTP/Tiny.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'HTTP_
   
   =item *
   
+  Karen Etheridge <ether@cpan.org>
+  
+  =item *
+  
   Lukas Eklund <leklund@gmail.com>
   
   =item *
@@ -4020,6 +4413,10 @@ $fatpacked{"HTTP/Tiny.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'HTTP_
   =item *
   
   Mike Doherty <doherty@cpan.org>
+  
+  =item *
+  
+  Nicolas Rochelemagne <rochelemagne@cpanel.net>
   
   =item *
   
@@ -4040,6 +4437,10 @@ $fatpacked{"HTTP/Tiny.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'HTTP_
   =item *
   
   Sören Kornetzki <soeren.kornetzki@delti.com>
+  
+  =item *
+  
+  Steve Grazzini <steve.grazzini@grantstreet.com>
   
   =item *
   
@@ -4069,6 +4470,1102 @@ $fatpacked{"HTTP/Tiny.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'HTTP_
   =cut
 HTTP_TINY
 
+$fatpacked{"IPC/System/Simple.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'IPC_SYSTEM_SIMPLE';
+  package IPC::System::Simple;
+  
+  # ABSTRACT: Run commands simply, with detailed diagnostics
+  
+  use 5.006;
+  use strict;
+  use warnings;
+  use re 'taint';
+  use Carp;
+  use List::Util qw(first);
+  use Scalar::Util qw(tainted);
+  use Config;
+  use constant WINDOWS => ($^O eq 'MSWin32');
+  use constant VMS     => ($^O eq 'VMS');
+  
+  BEGIN {
+  
+      # It would be lovely to use the 'if' module here, but it didn't
+      # enter core until 5.6.2, and we want to keep 5.6.0 compatibility.
+  
+  
+      if (WINDOWS) {
+  
+          ## no critic (ProhibitStringyEval)
+  
+          eval q{
+              use Win32::Process qw(INFINITE NORMAL_PRIORITY_CLASS);
+              use File::Spec;
+              use Win32;
+  
+              # This uses the same rules as the core win32.c/get_shell() call.
+  
+              use constant WINDOWS_SHELL => eval { Win32::IsWinNT() }
+                                              ? [ qw(cmd.exe /x/d/c) ]
+                                              : [ qw(command.com /c) ];
+  
+              # These are used when invoking _win32_capture
+              use constant NO_SHELL  => 0;
+              use constant USE_SHELL => 1;
+  
+          };
+  
+          ## use critic
+  
+          # Die nosily if any of the above broke.
+          die $@ if $@;
+      }
+  }
+  
+  # Note that we don't use WIFSTOPPED because perl never uses
+  # the WUNTRACED flag, and hence will never return early from
+  # system() if the child processes is suspended with a SIGSTOP.
+  
+  use POSIX qw(WIFEXITED WEXITSTATUS WIFSIGNALED WTERMSIG);
+  
+  use constant FAIL_START     => q{"%s" failed to start: "%s"};
+  use constant FAIL_PLUMBING  => q{Error in IPC::System::Simple plumbing: "%s" - "%s"};
+  use constant FAIL_CMD_BLANK => q{Entirely blank command passed: "%s"};
+  use constant FAIL_INTERNAL  => q{Internal error in IPC::System::Simple: "%s"};
+  use constant FAIL_TAINT     => q{%s called with tainted argument "%s"};
+  use constant FAIL_TAINT_ENV => q{%s called with tainted environment $ENV{%s}};
+  use constant FAIL_SIGNAL    => q{"%s" died to signal "%s" (%d)%s};
+  use constant FAIL_BADEXIT   => q{"%s" unexpectedly returned exit value %d};
+  
+  use constant FAIL_UNDEF     => q{%s called with undefined command};
+  
+  use constant FAIL_POSIX     => q{IPC::System::Simple does not understand the POSIX error '%s'.  Please check http://search.cpan.org/perldoc?IPC::System::Simple to see if there is an updated version.  If not please report this as a bug to http://rt.cpan.org/Public/Bug/Report.html?Queue=IPC-System-Simple};
+  
+  # On Perl's older than 5.8.x we can't assume that there'll be a
+  # $^{TAINT} for us to check, so we assume that our args may always
+  # be tainted.
+  use constant ASSUME_TAINTED => ($] < 5.008);
+  
+  use constant EXIT_ANY_CONST => -1;			# Used internally
+  use constant EXIT_ANY       => [ EXIT_ANY_CONST ];	# Exported
+  
+  use constant UNDEFINED_POSIX_RE => qr{not (?:defined|a valid) POSIX macro|not implemented on this architecture};
+  
+  require Exporter;
+  our @ISA = qw(Exporter);
+  
+  our @EXPORT_OK = qw( 
+      capture  capturex
+      run      runx
+      system   systemx
+      $EXITVAL EXIT_ANY
+  );
+  
+  our $VERSION = '1.25'; # VERSION : From dzil
+  our $EXITVAL = -1;
+  
+  my @Signal_from_number = split(' ', $Config{sig_name});
+  
+  # Environment variables we don't want to see tainted.
+  my @Check_tainted_env = qw(PATH IFS CDPATH ENV BASH_ENV);
+  if (WINDOWS) {
+  	push(@Check_tainted_env, 'PERL5SHELL');
+  }
+  if (VMS) {
+  	push(@Check_tainted_env, 'DCL$PATH');
+  }
+  
+  # Not all systems implement the WIFEXITED calls, but POSIX
+  # will always export them (even if they're just stubs that
+  # die with an error).  Test for the presence of a working
+  # WIFEXITED and friends, or define our own.
+  
+  eval { WIFEXITED(0); };
+  
+  if ($@ =~ UNDEFINED_POSIX_RE) {
+          no warnings 'redefine';  ## no critic
+  	*WIFEXITED   = sub { not $_[0] & 0xff };
+  	*WEXITSTATUS = sub { $_[0] >> 8  };
+  	*WIFSIGNALED = sub { $_[0] & 127 };
+  	*WTERMSIG    = sub { $_[0] & 127 };
+  } elsif ($@) {
+  	croak sprintf FAIL_POSIX, $@;
+  }
+  
+  # None of the POSIX modules I've found define WCOREDUMP, although
+  # many systems define it.  Check the POSIX module in the hope that
+  # it may actually be there.
+  
+  
+  # TODO: Ideally, $NATIVE_WCOREDUMP should be a constant.
+  
+  my $NATIVE_WCOREDUMP;
+  
+  eval { POSIX::WCOREDUMP(1); };
+  
+  if ($@ =~ UNDEFINED_POSIX_RE) {
+  	*WCOREDUMP = sub { $_[0] & 128 };
+          $NATIVE_WCOREDUMP = 0;
+  } elsif ($@) {
+  	croak sprintf FAIL_POSIX, $@;
+  } else {
+  	# POSIX actually has it defined!  Huzzah!
+  	*WCOREDUMP = \&POSIX::WCOREDUMP;
+          $NATIVE_WCOREDUMP = 1;
+  }
+  
+  sub _native_wcoredump {
+      return $NATIVE_WCOREDUMP;
+  }
+  
+  # system simply calls run
+  
+  *system  = \&run;
+  *systemx = \&runx;
+  
+  # run is our way of running a process with system() semantics
+  
+  sub run {
+  
+  	_check_taint(@_);
+  
+  	my ($valid_returns, $command, @args) = _process_args(@_);
+  
+          # If we have arguments, we really want to call systemx,
+          # so we do so.
+  
+  	if (@args) {
+                  return systemx($valid_returns, $command, @args);
+  	}
+  
+          # Without arguments, we're calling system, and checking
+          # the results.
+  
+  	# We're throwing our own exception on command not found, so
+  	# we don't need a warning from Perl.
+  
+          {
+              # silence 'Statement unlikely to be reached' warning
+              no warnings 'exec';             ## no critic
+              CORE::system($command,@args);
+          }
+  
+  	return _process_child_error($?,$command,$valid_returns);
+  }
+  
+  # runx is just like system/run, but *never* invokes the shell.
+  
+  sub runx {
+      _check_taint(@_);
+  
+      my ($valid_returns, $command, @args) = _process_args(@_);
+  
+      if (WINDOWS) {
+          our $EXITVAL = -1;
+  
+          my $pid = _spawn_or_die($command, "$command @args");
+  
+          $pid->Wait(INFINITE);	# Wait for process exit.
+          $pid->GetExitCode($EXITVAL);
+          return _check_exit($command,$EXITVAL,$valid_returns);
+      }
+  
+      # If system() fails, we throw our own exception.  We don't
+      # need to have perl complain about it too.
+  
+      no warnings; ## no critic
+  
+      CORE::system { $command } $command, @args;
+  
+      return _process_child_error($?, $command, $valid_returns);
+  }
+  
+  # capture is our way of running a process with backticks/qx semantics
+  
+  sub capture {
+  	_check_taint(@_);
+  
+  	my ($valid_returns, $command, @args) = _process_args(@_);
+  
+          if (@args) {
+              return capturex($valid_returns, $command, @args);
+          }
+  
+          if (WINDOWS) {
+              # USE_SHELL really means "You may use the shell if you need it."
+              return _win32_capture(USE_SHELL, $valid_returns, $command, @args);
+          }
+  
+  	our $EXITVAL = -1;
+  
+  	my $wantarray = wantarray();
+  
+  	# We'll produce our own warnings on failure to execute.
+  	no warnings 'exec';	## no critic
+  
+          if ($wantarray) {
+                  my @results = qx($command);
+                  _process_child_error($?,$command,$valid_returns);
+                  return @results;
+          } 
+  
+          my $results = qx($command);
+          _process_child_error($?,$command,$valid_returns);
+          return $results;
+  }
+  
+  # _win32_capture implements the capture and capurex commands on Win32.
+  # We need to wrap the whole internals of this sub into
+  # an if (WINDOWS) block to avoid it being compiled on non-Win32 systems.
+  
+  sub _win32_capture {
+      if (not WINDOWS) {
+          croak sprintf(FAIL_INTERNAL, "_win32_capture called when not under Win32");
+      } else {
+  
+          my ($use_shell, $valid_returns, $command, @args) = @_;
+  
+          my $wantarray = wantarray();
+  
+          # Perl doesn't support multi-arg open under
+          # Windows.  Perl also doesn't provide very good
+          # feedback when normal backtails fail, either;
+          # it returns exit status from the shell
+          # (which is indistinguishable from the command
+          # running and producing the same exit status).
+  
+          # As such, we essentially have to write our own
+          # backticks.
+  
+          # We start by dup'ing STDOUT.
+  
+          open(my $saved_stdout, '>&', \*STDOUT)  ## no critic
+                  or croak sprintf(FAIL_PLUMBING, "Can't dup STDOUT", $!);
+  
+          # We now open up a pipe that will allow us to	
+          # communicate with the new process.
+  
+          pipe(my ($read_fh, $write_fh))
+                  or croak sprintf(FAIL_PLUMBING, "Can't create pipe", $!);
+  
+          # Allow CRLF sequences to become "\n", since
+          # this is what Perl backticks do.
+  
+          binmode($read_fh, ':crlf');
+  
+          # Now we re-open our STDOUT to $write_fh...
+  
+          open(STDOUT, '>&', $write_fh)  ## no critic
+                  or croak sprintf(FAIL_PLUMBING, "Can't redirect STDOUT", $!);
+  
+          # If we have args, or we're told not to use the shell, then
+          # we treat $command as our shell.  Otherwise we grub around
+          # in our command to look for a command to run.
+          #
+          # Note that we don't actually *use* the shell (although in
+          # a future version we might).  Being told not to use the shell
+          # (capturex) means we treat our command as really being a command,
+          # and not a command line.
+  
+          my $exe =   @args                      ? $command :
+                      (! $use_shell)             ? $command :
+                      $command =~ m{^"([^"]+)"}x ? $1       :
+                      $command =~ m{(\S+)     }x ? $1       :
+                      croak sprintf(FAIL_CMD_BLANK, $command);
+  
+          # And now we spawn our new process with inherited
+          # filehandles.
+  
+          my $err;
+          my $pid = eval { 
+                  _spawn_or_die($exe, "$command @args"); 
+          }
+          or do {
+                  $err = $@;
+          };
+  
+          # Regardless of whether our command ran, we must restore STDOUT.
+          # RT #48319
+          open(STDOUT, '>&', $saved_stdout)  ## no critic
+                  or croak sprintf(FAIL_PLUMBING,"Can't restore STDOUT", $!);
+  
+          # And now, if there was an actual error , propagate it.
+          die $err if defined $err;   # If there's an error from _spawn_or_die
+  
+          # Clean-up the filehandles we no longer need...
+  
+          close($write_fh)
+                  or croak sprintf(FAIL_PLUMBING,q{Can't close write end of pipe}, $!);
+          close($saved_stdout)
+                  or croak sprintf(FAIL_PLUMBING,q{Can't close saved STDOUT}, $!);
+  
+          # Read the data from our child...
+  
+          my (@results, $result);
+  
+          if ($wantarray) {
+                  @results = <$read_fh>;
+          } else {
+                  $result = join("",<$read_fh>);
+          }
+  
+          # Tidy up our windows process and we're done!
+  
+          $pid->Wait(INFINITE);	# Wait for process exit.
+          $pid->GetExitCode($EXITVAL);
+  
+          _check_exit($command,$EXITVAL,$valid_returns);
+  
+          return $wantarray ? @results : $result;
+  
+      }
+  }
+  
+  # capturex() is just like backticks/qx, but never invokes the shell.
+  
+  sub capturex {
+  	_check_taint(@_);
+  
+  	my ($valid_returns, $command, @args) = _process_args(@_);
+  
+  	our $EXITVAL = -1;
+  
+  	my $wantarray = wantarray();
+  
+  	if (WINDOWS) {
+              return _win32_capture(NO_SHELL, $valid_returns, $command, @args);
+          }
+  
+  	# We can't use a multi-arg piped open here, since 5.6.x
+  	# doesn't like them.  Instead we emulate what 5.8.x does,
+  	# which is to create a pipe(), set the close-on-exec flag
+  	# on the child, and the fork/exec.  If the exec fails, the
+  	# child writes to the pipe.  If the exec succeeds, then
+  	# the pipe closes without data.
+  
+  	pipe(my ($read_fh, $write_fh))
+  		or croak sprintf(FAIL_PLUMBING, "Can't create pipe", $!);
+  
+  	# This next line also does an implicit fork.
+  	my $pid = open(my $pipe, '-|');	 ## no critic
+  
+  	if (not defined $pid) {
+  		croak sprintf(FAIL_START, $command, $!);
+  	} elsif (not $pid) {
+  		# Child process, execs command.
+  
+  		close($read_fh);
+  
+  		# TODO: 'no warnings exec' doesn't get rid
+  		# of the 'unlikely to be reached' warnings.
+  		# This is a bug in perl / perldiag / perllexwarn / warnings.
+  
+  		no warnings;   ## no critic
+  
+  		CORE::exec { $command } $command, @args;
+  
+  		# Oh no, exec fails!  Send the reason why to
+  		# the parent.
+  
+  		print {$write_fh} int($!);
+  		exit(-1);
+  	}
+  
+  	{
+  		# In parent process.
+  
+  		close($write_fh);
+  
+  		# Parent process, check for child error.
+  		my $error = <$read_fh>;
+  
+  		# Tidy up our pipes.
+  		close($read_fh);
+  
+  		# Check for error.
+  		if ($error) {
+  			# Setting $! to our child error number gives
+  			# us nice looking strings when printed.
+  			local $! = $error;
+  			croak sprintf(FAIL_START, $command, $!);
+  		}
+  	}
+  
+  	# Parent process, we don't care about our pid, but we
+  	# do go and read our pipe.
+  
+  	if ($wantarray) {
+  		my @results = <$pipe>;
+  		close($pipe);
+  		_process_child_error($?,$command,$valid_returns);
+  		return @results;
+  	}
+  
+  	# NB: We don't check the return status on close(), since
+  	# on failure it sets $?, which we then inspect for more
+  	# useful information.
+  
+  	my $results = join("",<$pipe>);
+  	close($pipe);
+  	_process_child_error($?,$command,$valid_returns);
+  	
+  	return $results;
+  
+  }
+  
+  # Tries really hard to spawn a process under Windows.  Returns
+  # the pid on success, or undef on error.
+  
+  sub _spawn_or_die {
+  
+  	# We need to wrap practically the entire sub in an
+  	# if block to ensure it doesn't get compiled under non-Win32
+  	# systems.  Compiling on these systems would not only be a
+  	# waste of time, but also results in complaints about
+  	# the NORMAL_PRIORITY_CLASS constant.
+  
+  	if (not WINDOWS) {
+  		croak sprintf(FAIL_INTERNAL, "_spawn_or_die called when not under Win32");
+  	} else {
+  		my ($orig_exe, $cmdline) = @_;
+  		my $pid;
+  
+  		my $exe = $orig_exe;
+  
+  		# If our command doesn't have an extension, add one.
+  		$exe .= $Config{_exe} if ($exe !~ m{\.});
+  
+  		Win32::Process::Create(
+  			$pid, $exe, $cmdline, 1, NORMAL_PRIORITY_CLASS, "."
+  		) and return $pid;
+  
+  		my @path = split(/;/,$ENV{PATH});
+  
+  		foreach my $dir (@path) {
+  			my $fullpath = File::Spec->catfile($dir,$exe);
+  
+  			# We're using -x here on the assumption that stat()
+  			# is faster than spawn, so trying to spawn a process
+  			# for each path element will be unacceptably
+  			# inefficient.
+  
+  			if (-x $fullpath) {
+  				Win32::Process::Create(
+  					$pid, $fullpath, $cmdline, 1,
+  					NORMAL_PRIORITY_CLASS, "."
+  				) and return $pid;
+  			}
+  		}
+  
+  		croak sprintf(FAIL_START, $orig_exe, $^E);
+  	}
+  }
+  
+  # Complain on tainted arguments or environment.
+  # ASSUME_TAINTED is true for 5.6.x, since it's missing ${^TAINT}
+  
+  sub _check_taint {
+  	return if not (ASSUME_TAINTED or ${^TAINT});
+  	my $caller = (caller(1))[3];
+  	foreach my $var (@_) {
+  		if (tainted $var) {
+  			croak sprintf(FAIL_TAINT, $caller, $var);
+  		}
+  	}
+  	foreach my $var (@Check_tainted_env) {
+  		if (tainted $ENV{$var} ) {
+  			croak sprintf(FAIL_TAINT_ENV, $caller, $var);
+  		}
+  	}
+  
+  	return;
+  
+  }
+  
+  # This subroutine performs the difficult task of interpreting
+  # $?.  It's not intended to be called directly, as it will
+  # croak on errors, and its implementation and interface may
+  # change in the future.
+  
+  sub _process_child_error {
+  	my ($child_error, $command, $valid_returns) = @_;
+  	
+  	$EXITVAL = -1;
+  
+  	my $coredump = WCOREDUMP($child_error);
+  
+          # There's a bug in perl 5.10.0 where if the system
+          # does not provide a native WCOREDUMP, then $? will
+          # never contain coredump information.  This code
+          # checks to see if we have the bug, and works around
+          # it if needed.
+  
+          if ($] >= 5.010 and not $NATIVE_WCOREDUMP) {
+              $coredump ||= WCOREDUMP( ${^CHILD_ERROR_NATIVE} );
+          }
+  
+  	if ($child_error == -1) {
+  		croak sprintf(FAIL_START, $command, $!);
+  
+  	} elsif ( WIFEXITED( $child_error ) ) {
+  		$EXITVAL = WEXITSTATUS( $child_error );
+  
+  		return _check_exit($command,$EXITVAL,$valid_returns);
+  
+  	} elsif ( WIFSIGNALED( $child_error ) ) {
+  		my $signal_no   = WTERMSIG( $child_error );
+  		my $signal_name = $Signal_from_number[$signal_no] || "UNKNOWN";
+  
+  		croak sprintf FAIL_SIGNAL, $command, $signal_name, $signal_no, ($coredump ? " and dumped core" : "");
+  
+  
+  	} 
+  
+  	croak sprintf(FAIL_INTERNAL, qq{'$command' ran without exit value or signal});
+  
+  }
+  
+  # A simple subroutine for checking exit values.  Results in better
+  # assurance of consistent error messages, and better forward support
+  # for new features in I::S::S.
+  
+  sub _check_exit {
+  	my ($command, $exitval, $valid_returns) = @_;
+  
+  	# If we have a single-value list consisting of the EXIT_ANY
+  	# value, then we're happy with whatever exit value we're given.
+  	if (@$valid_returns == 1 and $valid_returns->[0] == EXIT_ANY_CONST) {
+  		return $exitval;
+  	}
+  
+  	if (not defined first { $_ == $exitval } @$valid_returns) {
+  		croak sprintf FAIL_BADEXIT, $command, $exitval;
+  	}	
+  	return $exitval;
+  }
+  
+  
+  # This subroutine simply determines a list of valid returns, the command
+  # name, and any arguments that we need to pass to it.
+  
+  sub _process_args {
+  	my $valid_returns = [ 0 ];
+  	my $caller = (caller(1))[3];
+  
+  	if (not @_) {
+  		croak "$caller called with no arguments";
+  	}
+  
+  	if (ref $_[0] eq "ARRAY") {
+  		$valid_returns = shift(@_);
+  	}
+  
+  	if (not @_) {
+  		croak "$caller called with no command";
+  	}
+  
+  	my $command = shift(@_);
+  
+          if (not defined $command) {
+                  croak sprintf( FAIL_UNDEF, $caller );
+          }
+  
+  	return ($valid_returns,$command,@_);
+  
+  }
+  
+  1;
+  
+  __END__
+  
+  =head1 NAME
+  
+  IPC::System::Simple - Run commands simply, with detailed diagnostics
+  
+  =head1 SYNOPSIS
+  
+    use IPC::System::Simple qw(system systemx capture capturex);
+  
+    system("some_command");        # Command succeeds or dies!
+  
+    system("some_command",@args);  # Succeeds or dies, avoids shell if @args
+  
+    systemx("some_command",@args); # Succeeds or dies, NEVER uses the shell
+  
+  
+    # Capture the output of a command (just like backticks). Dies on error.
+    my $output = capture("some_command");
+  
+    # Just like backticks in list context.  Dies on error.
+    my @output = capture("some_command");
+  
+    # As above, but avoids the shell if @args is non-empty
+    my $output = capture("some_command", @args);
+  
+    # As above, but NEVER invokes the shell.
+    my $output = capturex("some_command", @args);
+    my @output = capturex("some_command", @args);
+  
+  =head1 DESCRIPTION
+  
+  Calling Perl's in-built C<system()> function is easy, 
+  determining if it was successful is I<hard>.  Let's face it,
+  C<$?> isn't the nicest variable in the world to play with, and
+  even if you I<do> check it, producing a well-formatted error
+  string takes a lot of work.
+  
+  C<IPC::System::Simple> takes the hard work out of calling 
+  external commands.  In fact, if you want to be really lazy,
+  you can just write:
+  
+      use IPC::System::Simple qw(system);
+  
+  and all of your C<system> commands will either succeed (run to
+  completion and return a zero exit value), or die with rich diagnostic
+  messages.
+  
+  The C<IPC::System::Simple> module also provides a simple replacement
+  to Perl's backticks operator.  Simply write:
+  
+      use IPC::System::Simple qw(capture);
+  
+  and then use the L</capture()> command just like you'd use backticks.
+  If there's an error, it will die with a detailed description of what
+  went wrong.  Better still, you can even use C<capturex()> to run the
+  equivalent of backticks, but without the shell:
+  
+      use IPC::System::Simple qw(capturex);
+  
+      my $result = capturex($command, @args);
+  
+  If you want more power than the basic interface, including the
+  ability to specify which exit values are acceptable, trap errors,
+  or process diagnostics, then read on!
+  
+  =head1 ADVANCED SYNOPSIS
+  
+    use IPC::System::Simple qw(
+      capture capturex system systemx run runx $EXITVAL EXIT_ANY
+    );
+  
+    # Run a command, throwing exception on failure
+  
+    run("some_command");
+  
+    runx("some_command",@args);  # Run a command, avoiding the shell
+  
+    # Do the same thing, but with the drop-in system replacement.
+  
+    system("some_command");
+  
+    systemx("some_command", @args);
+  
+    # Run a command which must return 0..5, avoid the shell, and get the
+    # exit value (we could also look at $EXITVAL)
+  
+    my $exit_value = runx([0..5], "some_command", @args);
+  
+    # The same, but any exit value will do.
+  
+    my $exit_value = runx(EXIT_ANY, "some_command", @args);
+  
+    # Capture output into $result and throw exception on failure
+  
+    my $result = capture("some_command");	
+  
+    # Check exit value from captured command
+  
+    print "some_command exited with status $EXITVAL\n";
+  
+    # Captures into @lines, splitting on $/
+    my @lines = capture("some_command"); 
+  
+    # Run a command which must return 0..5, capture the output into
+    # @lines, and avoid the shell.
+  
+    my @lines  = capturex([0..5], "some_command", @args);
+  
+  =head1 ADVANCED USAGE
+  
+  =head2 run() and system()
+  
+  C<IPC::System::Simple> provides a subroutine called
+  C<run>, that executes a command using the same semantics is
+  Perl's built-in C<system>:
+  
+      use IPC::System::Simple qw(run);
+  
+      run("cat *.txt");           # Execute command via the shell
+      run("cat","/etc/motd");     # Execute command without shell
+  
+  The primary difference between Perl's in-built system and
+  the C<run> command is that C<run> will throw an exception on
+  failure, and allows a list of acceptable exit values to be set.
+  See L</Exit values> for further information.
+  
+  In fact, you can even have C<IPC::System::Simple> replace the
+  default C<system> function for your package so it has the
+  same behaviour:
+  
+      use IPC::System::Simple qw(system);
+  
+      system("cat *.txt");  # system now suceeds or dies!
+  
+  C<system> and C<run> are aliases to each other.
+  
+  See also L</runx(), systemx() and capturex()> for variants of
+  C<system()> and C<run()> that never invoke the shell, even with
+  a single argument.
+  
+  =head2 capture()
+  
+  A second subroutine, named C<capture> executes a command with
+  the same semantics as Perl's built-in backticks (and C<qx()>):
+  
+      use IPC::System::Simple qw(capture);
+  
+      # Capture text while invoking the shell.
+      my $file  = capture("cat /etc/motd");
+      my @lines = capture("cat /etc/passwd");
+  
+  However unlike regular backticks, which always use the shell, C<capture>
+  will bypass the shell when called with multiple arguments:
+  
+      # Capture text while avoiding the shell.
+      my $file  = capture("cat", "/etc/motd");
+      my @lines = capture("cat", "/etc/passwd");
+  
+  See also L</runx(), systemx() and capturex()> for a variant of
+  C<capture()> that never invokes the shell, even with a single
+  argument.
+  
+  =head2 runx(), systemx() and capturex()
+  
+  The C<runx()>, C<systemx()> and C<capturex()> commands are identical
+  to the multi-argument forms of C<run()>, C<system()> and C<capture()>
+  respectively, but I<never> invoke the shell, even when called with a
+  single argument.  These forms are particularly useful when a command's
+  argument list I<might> be empty, for example:
+  
+      systemx($cmd, @args);
+  
+  The use of C<systemx()> here guarantees that the shell will I<never>
+  be invoked, even if C<@args> is empty.
+  
+  =head2 Exception handling
+  
+  In the case where the command returns an unexpected status, both C<run> and
+  C<capture> will throw an exception, which if not caught will terminate your
+  program with an error.
+  
+  Capturing the exception is easy:
+  
+      eval {
+          run("cat *.txt");
+      };
+  
+      if ($@) {
+          print "Something went wrong - $@\n";
+      }
+  
+  See the diagnostics section below for more details.
+  
+  =head3 Exception cases
+  
+  C<IPC::System::Simple> considers the following to be unexpected,
+  and worthy of exception:
+  
+  =over 4
+  
+  =item *
+  
+  Failing to start entirely (eg, command not found, permission denied).
+  
+  =item *
+  
+  Returning an exit value other than zero (but see below).
+  
+  =item *
+  
+  Being killed by a signal.
+  
+  =item *
+  
+  Being passed tainted data (in taint mode).
+  
+  =back
+  
+  =head2 Exit values
+  
+  Traditionally, system commands return a zero status for success and a
+  non-zero status for failure.  C<IPC::System::Simple> will default to throwing
+  an exception if a non-zero exit value is returned.
+  
+  You may specify a range of values which are considered acceptable exit
+  values by passing an I<array reference> as the first argument.  The
+  special constant C<EXIT_ANY> can be used to allow I<any> exit value
+  to be returned.
+  
+  	use IPC::System::Simple qw(run system capture EXIT_ANY);
+  
+  	run( [0..5], "cat *.txt");             # Exit values 0-5 are OK
+  
+  	system( [0..5], "cat *.txt");          # This works the same way
+  
+  	my @lines = capture( EXIT_ANY, "cat *.txt"); # Any exit is fine.
+  
+  The C<run> and replacement C<system> subroutines returns the exit
+  value of the process:
+  
+  	my $exit_value = run( [0..5], "cat *.txt");
+  
+  	# OR:
+  
+  	my $exit_value = system( [0..5] "cat *.txt");
+  
+  	print "Program exited with value $exit_value\n";
+  
+  =head3 $EXITVAL
+  
+  The exit value of any command executed by C<IPC::System::Simple>
+  can always be retrieved from the C<$IPC::System::Simple::EXITVAL>
+  variable:
+  
+  This is particularly useful when inspecting results from C<capture>,
+  which returns the captured text from the command.
+  
+  	use IPC::System::Simple qw(capture $EXITVAL EXIT_ANY);
+  
+  	my @enemies_defeated = capture(EXIT_ANY, "defeat_evil", "/dev/mordor");
+  
+  	print "Program exited with value $EXITVAL\n";
+  
+  C<$EXITVAL> will be set to C<-1> if the command did not exit normally (eg,
+  being terminated by a signal) or did not start.  In this situation an
+  exception will also be thrown.
+  
+  =head2 WINDOWS-SPECIFIC NOTES
+  
+  As of C<IPC::System::Simple> v0.06, the C<run> subroutine I<when
+  called with multiple arguments> will make available the full 32-bit
+  exit value on Win32 systems.  This is different from the
+  previous versions of C<IPC::System::Simple> and from Perl's
+  in-build C<system()> function, which can only handle 8-bit return values.
+  
+  The C<capture> subroutine always returns the 32-bit exit value under
+  Windows.  The C<capture> subroutine also never uses the shell,
+  even when passed a single argument.
+  
+  Versions of C<IPC::System::Simple> before v0.09 would not search
+  the C<PATH> environment variable when the multi-argument form of
+  C<run()> was called.  Versions from v0.09 onwards correctly search
+  the path provided the command is provided including the extension
+  (eg, C<notepad.exe> rather than just C<notepad>, or C<gvim.bat> rather
+  than just C<gvim>).  If no extension is provided, C<.exe> is
+  assumed.
+  
+  Signals are not supported on Windows systems.  Sending a signal
+  to a Windows process will usually cause it to exit with the signal
+  number used.
+  
+  =head1 DIAGNOSTICS
+  
+  =over 4
+  
+  =item "%s" failed to start: "%s"
+  
+  The command specified did not even start.  It may not exist, or
+  you may not have permission to use it.  The reason it could not
+  start (as determined from C<$!>) will be provided.
+  
+  =item "%s" unexpectedly returned exit value %d
+  
+  The command ran successfully, but returned an exit value we did
+  not expect.  The value returned is reported.
+  
+  =item "%s" died to signal "%s" (%d) %s
+  
+  The command was killed by a signal.  The name of the signal
+  will be reported, or C<UNKNOWN> if it cannot be determined.  The
+  signal number is always reported.  If we detected that the
+  process dumped core, then the string C<and dumped core> is
+  appended.
+  
+  =item IPC::System::Simple::%s called with no arguments
+  
+  You attempted to call C<run> or C<capture> but did not provide any
+  arguments at all.  At the very lease you need to supply a command
+  to run.
+  
+  =item IPC::System::Simple::%s called with no command
+  
+  You called C<run> or C<capture> with a list of acceptable exit values,
+  but no actual command.
+  
+  =item IPC::System::Simple::%s called with tainted argument "%s"
+  
+  You called C<run> or C<capture> with tainted (untrusted) arguments, which is
+  almost certainly a bad idea.  To untaint your arguments you'll need to pass
+  your data through a regular expression and use the resulting match variables.
+  See L<perlsec/Laundering and Detecting Tainted Data> for more information.
+  
+  =item IPC::System::Simple::%s called with tainted environment $ENV{%s}
+  
+  You called C<run> or C<capture> but part of your environment was tainted
+  (untrusted).  You should either delete the named environment
+  variable before calling C<run>, or set it to an untainted value
+  (usually one set inside your program).  See
+  L<perlsec/Cleaning Up Your Path> for more information.
+  
+  =item Error in IPC::System::Simple plumbing: "%s" - "%s"
+  
+  Implementing the C<capture> command involves dark and terrible magicks
+  involving pipes, and one of them has sprung a leak.  This could be due to a
+  lack of file descriptors, although there are other possibilities.
+  
+  If you are able to reproduce this error, you are encouraged
+  to submit a bug report according to the L</Reporting bugs> section below.
+  
+  =item Internal error in IPC::System::Simple: "%s"
+  
+  You've found a bug in C<IPC::System::Simple>.  Please check to
+  see if an updated version of C<IPC::System::Simple> is available.
+  If not, please file a bug report according to the L</Reporting bugs> section
+  below.
+  
+  =item IPC::System::Simple::%s called with undefined command
+  
+  You've passed the undefined value as a command to be executed.
+  While this is a very Zen-like action, it's not supported by
+  Perl's current implementation.
+  
+  =back
+  
+  =head1 DEPENDENCIES
+  
+  This module depends upon L<Win32::Process> when used on Win32
+  system.  C<Win32::Process> is bundled as a core module in ActivePerl 5.6
+  and above.
+  
+  There are no non-core dependencies on non-Win32 systems.
+  
+  =head1 COMPARISON TO OTHER APIs
+  
+  Perl provides a range of in-built functions for handling external
+  commands, and CPAN provides even more.  The C<IPC::System::Simple>
+  differentiates itself from other options by providing:
+  
+  =over 4
+  
+  =item Extremely detailed diagnostics
+  
+  The diagnostics produced by C<IPC::System::Simple> are designed
+  to provide as much information as possible.  Rather than requiring
+  the developer to inspect C<$?>, C<IPC::System::Simple> does the
+  hard work for you.
+  
+  If an odd exit status is provided, you're informed of what it is.  If
+  a signal kills your process, you are informed of both its name and
+  number.  If tainted data or environment prevents your command from
+  running, you are informed of exactly which datais 
+  
+  =item Exceptions on failure
+  
+  C<IPC::System::Simple> takes an aggressive approach to error handling.
+  Rather than allow commands to fail silently, exceptions are thrown
+  when unexpected results are seen.  This allows for easy development
+  using a try/catch style, and avoids the possibility of accidently
+  continuing after a failed command.
+  
+  =item Easy access to exit status
+  
+  The C<run>, C<system> and C<capture> commands all set C<$EXITVAL>,
+  making it easy to determine the exit status of a command.
+  Additionally, the C<system> and C<run> interfaces return the exit
+  status.
+  
+  =item Consistent interfaces
+  
+  When called with multiple arguments, the C<run>, C<system> and
+  C<capture> interfaces I<never> invoke the shell.  This differs
+  from the in-built Perl C<system> command which may invoke the
+  shell under Windows when called with multiple arguments.  It
+  differs from the in-built Perl backticks operator which always
+  invokes the shell.
+  
+  =back
+  
+  =head1 BUGS
+  
+  When C<system> is exported, the exotic form C<system { $cmd } @args>
+  is not supported.  Attemping to use the exotic form is a syntax
+  error.  This affects the calling package I<only>.  Use C<CORE::system>
+  if you need it, or consider using the L<autodie> module to replace
+  C<system> with lexical scope.
+  
+  Core dumps are only checked for when a process dies due to a
+  signal.  It is not believed there are any systems where processes
+  can dump core without dying to a signal.
+  
+  C<WIFSTOPPED> status is not checked, as perl never spawns processes
+  with the C<WUNTRACED> option.
+  
+  Signals are not supported under Win32 systems, since they don't
+  work at all like Unix signals.  Win32 singals cause commands to
+  exit with a given exit value, which this modules I<does> capture.
+  
+  Only 8-bit values are returned when C<run()> or C<system()> 
+  is called with a single value under Win32.  Multi-argument calls
+  to C<run()> and C<system()>, as well as the C<runx()> and
+  C<systemx()> always return the 32-bit Windows return values.
+  
+  =head2 Reporting bugs
+  
+  Before reporting a bug, please check to ensure you are using the
+  most recent version of C<IPC::System::Simple>.  Your problem may
+  have already been fixed in a new release.
+  
+  You can find the C<IPC::System::Simple> bug-tracker at
+  L<http://rt.cpan.org/Public/Dist/Display.html?Name=IPC-System-Simple> .
+  Please check to see if your bug has already been reported; if
+  in doubt, report yours anyway.
+  
+  Submitting a patch and/or failing test case will greatly expedite
+  the fixing of bugs.
+  
+  =head1 FEEDBACK
+  
+  If you find this module useful, please consider rating it on the
+  CPAN Ratings service at
+  L<http://cpanratings.perl.org/rate/?distribution=IPC-System-Simple> .
+  
+  The module author loves to hear how C<IPC::System::Simple> has made
+  your life better (or worse).  Feedback can be sent to
+  E<lt>pjf@perltraining.com.auE<gt>.
+  
+  =head1 SEE ALSO
+  
+  L<autodie> uses C<IPC::System::Simple> to provide succeed-or-die
+  replacements to C<system> (and other built-ins) with lexical scope.
+  
+  L<POSIX>, L<IPC::Run::Simple>, L<perlipc>, L<perlport>, L<IPC::Run>,
+  L<IPC::Run3>, L<Win32::Process>
+  
+  =head1 AUTHOR
+  
+  Paul Fenwick E<lt>pjf@cpan.orgE<gt>
+  
+  =head1 COPYRIGHT AND LICENSE
+  
+  Copyright (C) 2006-2008 by Paul Fenwick
+  
+  This library is free software; you can redistribute it and/or modify
+  it under the same terms as Perl itself, either Perl version 5.6.0 or,
+  at your option, any later version of Perl 5 you may have available.
+  
+  =for Pod::Coverage WCOREDUMP
+  
+  =cut
+IPC_SYSTEM_SIMPLE
+
 $fatpacked{"JSON/MaybeXS.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_MAYBEXS';
   package JSON::MaybeXS;
   
@@ -4076,7 +5573,7 @@ $fatpacked{"JSON/MaybeXS.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JS
   use warnings FATAL => 'all';
   use base qw(Exporter);
   
-  our $VERSION = '1.003005';
+  our $VERSION = '1.003009';
   $VERSION = eval $VERSION;
   
   sub _choose_json_module {
@@ -4226,7 +5723,7 @@ $fatpacked{"JSON/MaybeXS.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JS
   C<:all>.  NOTE: This is to support legacy code that makes extensive
   use of C<to_json> and C<from_json> which you are not yet in a position to
   refactor.  DO NOT use this import tag in new code, in order to avoid
-  the crawling horrors of getting UTF8 support subtly wrong.  See the
+  the crawling horrors of getting UTF-8 support subtly wrong.  See the
   documentation for L<JSON> for further details.
   
   =head2 encode_json
@@ -4287,6 +5784,9 @@ $fatpacked{"JSON/MaybeXS.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JS
   which works equivalently to the above (and in the usual tradition will accept
   a hashref instead of a hash, should you so desire).
   
+  The resulting object is blessed into the underlying backend, which offers (at
+  least) the methods C<encode> and C<decode>.
+  
   =head1 BOOLEANS
   
   To include JSON-aware booleans (C<true>, C<false>) in your data, just do:
@@ -4294,6 +5794,33 @@ $fatpacked{"JSON/MaybeXS.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JS
       use JSON::MaybeXS;
       my $true = JSON->true;
       my $false = JSON->false;
+  
+  =head1 CONVERTING FROM JSON::Any
+  
+  L<JSON::Any> used to be the favoured compatibility layer above the various
+  JSON backends, but over time has grown a lot of extra code to deal with legacy
+  backends (e.g. L<JSON::Syck>) that are no longer needed.  This is a rough guide of translating such code:
+  
+  Change code from:
+  
+      use JSON::Any;
+      my $json = JSON::Any->new->objToJson($data);    # or to_json($data), or Dump($data)
+  
+  to:
+  
+      use JSON::MaybeXS;
+      my $json = encode_json($data);
+  
+  
+  Change code from:
+  
+      use JSON::Any;
+      my $data = JSON::Any->new->jsonToObj($json);    # or from_json($json), or Load($json)
+  
+  to:
+  
+      use JSON::MaybeXS;
+      my $json = decode_json($data);
   
   =head1 CAVEATS
   
@@ -4315,6 +5842,23 @@ $fatpacked{"JSON/MaybeXS.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JS
   
       use Moose::Util::TypeConstraints 'duck_type';
       is 'json' => ( isa => Object , duck_type([qw/ encode decode /]));
+  
+  =head1 INSTALLATION
+  
+  At installation time, F<Makefile.PL> will attempt to determine if you have a
+  working compiler available, and therefore whether you are able to run XS code.
+  If so, L<Cpanel::JSON::XS> will be added to the prerequisite list, unless
+  L<JSON::XS> is already installed at a high enough version. L<JSON::XS> may
+  also be upgraded to fix any incompatibility issues.
+  
+  Because running XS code is not mandatory and L<JSON::PP> (which is in perl
+  core) is used as a fallback backend, this module is safe to be used in a suite
+  of code that is fatpacked or installed into a restricted-resource environment.
+  
+  You can also prevent any XS dependencies from being installed by setting
+  C<PUREPERL_ONLY=1> in F<Makefile.PL> options (or in the C<PERL_MM_OPT>
+  environment variable), or using the C<--pp> or C<--pureperl> flags with the
+  L<cpanminus client|cpanm>.
   
   =head1 AUTHOR
   
@@ -4352,14 +5896,17 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   
   use 5.005;
   use strict;
-  use base qw(Exporter);
+  
+  use Exporter ();
+  BEGIN { @JSON::PP::ISA = ('Exporter') }
+  
   use overload ();
+  use JSON::PP::Boolean;
   
   use Carp ();
-  use B ();
   #use Devel::Peek;
   
-  $JSON::PP::VERSION = '2.27400';
+  $JSON::PP::VERSION = '2.94';
   
   @JSON::PP::EXPORT = qw(encode_json decode_json from_json to_json);
   
@@ -4389,6 +5936,13 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   use constant P_ALLOW_UNKNOWN        => 18;
   
   use constant OLD_PERL => $] < 5.008 ? 1 : 0;
+  use constant USE_B => 0;
+  
+  BEGIN {
+  if (USE_B) {
+      require B;
+  }
+  }
   
   BEGIN {
       my @xs_compati_bit_properties = qw(
@@ -4402,31 +5956,31 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   
       # Perl version check, Unicode handling is enabled?
       # Helper module sets @JSON::PP::_properties.
-      if ($] < 5.008 ) {
+      if ( OLD_PERL ) {
           my $helper = $] >= 5.006 ? 'JSON::PP::Compat5006' : 'JSON::PP::Compat5005';
           eval qq| require $helper |;
           if ($@) { Carp::croak $@; }
       }
   
       for my $name (@xs_compati_bit_properties, @pp_bit_properties) {
-          my $flag_name = 'P_' . uc($name);
+          my $property_id = 'P_' . uc($name);
   
           eval qq/
               sub $name {
                   my \$enable = defined \$_[1] ? \$_[1] : 1;
   
                   if (\$enable) {
-                      \$_[0]->{PROPS}->[$flag_name] = 1;
+                      \$_[0]->{PROPS}->[$property_id] = 1;
                   }
                   else {
-                      \$_[0]->{PROPS}->[$flag_name] = 0;
+                      \$_[0]->{PROPS}->[$property_id] = 0;
                   }
   
                   \$_[0];
               }
   
               sub get_$name {
-                  \$_[0]->{PROPS}->[$flag_name] ? 1 : '';
+                  \$_[0]->{PROPS}->[$property_id] ? 1 : '';
               }
           /;
       }
@@ -4436,16 +5990,6 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   
   
   # Functions
-  
-  my %encode_allow_method
-       = map {($_ => 1)} qw/utf8 pretty allow_nonref latin1 self_encode escape_slash
-                            allow_blessed convert_blessed indent indent_length allow_bignum
-                            as_nonblessed
-                          /;
-  my %decode_allow_method
-       = map {($_ => 1)} qw/utf8 allow_nonref loose allow_singlequote allow_bignum
-                            allow_barekey max_size relaxed/;
-  
   
   my $JSON; # cache
   
@@ -4477,9 +6021,6 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
       my $self  = {
           max_depth   => 512,
           max_size    => 0,
-          indent      => 0,
-          FLAGS       => 0,
-          fallback      => sub { encode_error('Invalid value. JSON can only reference.') },
           indent_length => 3,
       };
   
@@ -4512,7 +6053,7 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
       my $enable = defined $v ? $v : 1;
   
       if ($enable) { # indent_length(3) for JSON::XS compatibility
-          $self->indent(1)->indent_length(3)->space_before(1)->space_after(1);
+          $self->indent(1)->space_before(1)->space_after(1);
       }
       else {
           $self->indent(0)->space_before(0)->space_after(0);
@@ -4544,14 +6085,24 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   
   
   sub filter_json_object {
-      $_[0]->{cb_object} = defined $_[1] ? $_[1] : 0;
+      if (defined $_[1] and ref $_[1] eq 'CODE') {
+          $_[0]->{cb_object} = $_[1];
+      } else {
+          delete $_[0]->{cb_object};
+      }
       $_[0]->{F_HOOK} = ($_[0]->{cb_object} or $_[0]->{cb_sk_object}) ? 1 : 0;
       $_[0];
   }
   
   sub filter_json_single_key_object {
-      if (@_ > 1) {
+      if (@_ == 1 or @_ > 3) {
+          Carp::croak("Usage: JSON::PP::filter_json_single_key_object(self, key, callback = undef)");
+      }
+      if (defined $_[2] and ref $_[2] eq 'CODE') {
           $_[0]->{cb_sk_object}->{$_[1]} = $_[2];
+      } else {
+          delete $_[0]->{cb_sk_object}->{$_[1]};
+          delete $_[0]->{cb_sk_object} unless %{$_[0]->{cb_sk_object} || {}};
       }
       $_[0]->{F_HOOK} = ($_[0]->{cb_object} or $_[0]->{cb_sk_object}) ? 1 : 0;
       $_[0];
@@ -4577,7 +6128,8 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   }
   
   sub allow_bigint {
-      Carp::carp("allow_bigint() is obsoleted. use allow_bignum() insted.");
+      Carp::carp("allow_bigint() is obsoleted. use allow_bignum() instead.");
+      $_[0]->allow_bignum;
   }
   
   ###############################
@@ -4617,11 +6169,11 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
           $indent_count = 0;
           $depth        = 0;
   
-          my $idx = $self->{PROPS};
+          my $props = $self->{PROPS};
   
           ($ascii, $latin1, $utf8, $indent, $canonical, $space_before, $space_after, $allow_blessed,
               $convert_blessed, $escape_slash, $bignum, $as_nonblessed)
-           = @{$idx}[P_ASCII .. P_SPACE_AFTER, P_ALLOW_BLESSED, P_CONVERT_BLESSED,
+           = @{$props}[P_ASCII .. P_SPACE_AFTER, P_ALLOW_BLESSED, P_CONVERT_BLESSED,
                       P_ESCAPE_SLASH, P_ALLOW_BIGNUM, P_AS_NONBLESSED];
   
           ($max_depth, $indent_length) = @{$self}{qw/max_depth indent_length/};
@@ -4635,7 +6187,7 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
           }
   
           encode_error("hash- or arrayref expected (not a simple scalar, use allow_nonref to allow this)")
-               if(!ref $obj and !$idx->[ P_ALLOW_NONREF ]);
+               if(!ref $obj and !$props->[ P_ALLOW_NONREF ]);
   
           my $str  = $self->object_to_json($obj);
   
@@ -4645,7 +6197,7 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
               utf8::upgrade($str);
           }
   
-          if ($idx->[ P_SHRINK ]) {
+          if ($props->[ P_SHRINK ]) {
               utf8::downgrade($str, 1);
           }
   
@@ -4683,13 +6235,14 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
                   }
   
                   return "$obj" if ( $bignum and _is_bignum($obj) );
-                  return $self->blessed_to_json($obj) if ($allow_blessed and $as_nonblessed); # will be removed.
   
+                  if ($allow_blessed) {
+                      return $self->blessed_to_json($obj) if ($as_nonblessed); # will be removed.
+                      return 'null';
+                  }
                   encode_error( sprintf("encountered object '%s', but neither allow_blessed "
                       . "nor convert_blessed settings are enabled", $obj)
-                  ) unless ($allow_blessed);
-  
-                  return 'null';
+                  );
               }
               else {
                   return $self->value_to_json($obj);
@@ -4713,15 +6266,16 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   
           for my $k ( _sort( $obj ) ) {
               if ( OLD_PERL ) { utf8::decode($k) } # key for Perl 5.6 / be optimized
-              push @res, string_to_json( $self, $k )
+              push @res, $self->string_to_json( $k )
                             .  $del
-                            . ( $self->object_to_json( $obj->{$k} ) || $self->value_to_json( $obj->{$k} ) );
+                            . ( ref $obj->{$k} ? $self->object_to_json( $obj->{$k} ) : $self->value_to_json( $obj->{$k} ) );
           }
   
           --$depth;
           $self->_down_indent() if ($indent);
   
-          return   '{' . ( @res ? $pre : '' ) . ( @res ? join( ",$pre", @res ) . $post : '' )  . '}';
+          return '{}' unless @res;
+          return '{' . $pre . join( ",$pre", @res ) . $post . '}';
       }
   
   
@@ -4735,36 +6289,53 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
           my ($pre, $post) = $indent ? $self->_up_indent() : ('', '');
   
           for my $v (@$obj){
-              push @res, $self->object_to_json($v) || $self->value_to_json($v);
+              push @res, ref($v) ? $self->object_to_json($v) : $self->value_to_json($v);
           }
   
           --$depth;
           $self->_down_indent() if ($indent);
   
-          return '[' . ( @res ? $pre : '' ) . ( @res ? join( ",$pre", @res ) . $post : '' ) . ']';
+          return '[]' unless @res;
+          return '[' . $pre . join( ",$pre", @res ) . $post . ']';
       }
   
+      sub _looks_like_number {
+          my $value = shift;
+          if (USE_B) {
+              my $b_obj = B::svref_2object(\$value);
+              my $flags = $b_obj->FLAGS;
+              return 1 if $flags & ( B::SVp_IOK() | B::SVp_NOK() ) and !( $flags & B::SVp_POK() );
+              return;
+          } else {
+              no warnings 'numeric';
+              # detect numbers
+              # string & "" -> ""
+              # number & "" -> 0 (with warning)
+              # nan and inf can detect as numbers, so check with * 0
+              return unless length((my $dummy = "") & $value);
+              return unless 0 + $value eq $value;
+              return 1 if $value * 0 == 0;
+              return -1; # inf/nan
+          }
+      }
   
       sub value_to_json {
           my ($self, $value) = @_;
   
           return 'null' if(!defined $value);
   
-          my $b_obj = B::svref_2object(\$value);  # for round trip problem
-          my $flags = $b_obj->FLAGS;
-  
-          return $value # as is 
-              if $flags & ( B::SVp_IOK | B::SVp_NOK ) and !( $flags & B::SVp_POK ); # SvTYPE is IV or NV?
-  
           my $type = ref($value);
   
-          if(!$type){
-              return string_to_json($self, $value);
+          if (!$type) {
+              if (_looks_like_number($value)) {
+                  return $value;
+              }
+              return $self->string_to_json($value);
           }
           elsif( blessed($value) and  $value->isa('JSON::PP::Boolean') ){
               return $$value == 1 ? 'true' : 'false';
           }
-          elsif ($type) {
+          else {
               if ((overload::StrVal($value) =~ /=(\w+)/)[0]) {
                   return $self->value_to_json("$value");
               }
@@ -4776,25 +6347,19 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
                          : encode_error("cannot encode reference to scalar");
               }
   
-               if ( $self->{PROPS}->[ P_ALLOW_UNKNOWN ] ) {
-                   return 'null';
-               }
-               else {
-                   if ( $type eq 'SCALAR' or $type eq 'REF' ) {
+              if ( $self->{PROPS}->[ P_ALLOW_UNKNOWN ] ) {
+                  return 'null';
+              }
+              else {
+                  if ( $type eq 'SCALAR' or $type eq 'REF' ) {
                       encode_error("cannot encode reference to scalar");
-                   }
-                   else {
+                  }
+                  else {
                       encode_error("encountered $value, but JSON can only represent references to arrays or hashes");
-                   }
-               }
+                  }
+              }
   
           }
-          else {
-              return $self->{fallback}->($value)
-                   if ($self->{fallback} and ref($self->{fallback}) eq 'CODE');
-              return 'null';
-          }
-  
       }
   
   
@@ -4973,19 +6538,27 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   
       my $F_HOOK;
   
-      my $allow_bigint;   # using Math::BigInt
+      my $allow_bignum;   # using Math::BigInt/BigFloat
       my $singlequote;    # loosely quoting
       my $loose;          # 
       my $allow_barekey;  # bareKey
   
-      # $opt flag
-      # 0x00000001 .... decode_prefix
-      # 0x10000000 .... incr_parse
+      sub _detect_utf_encoding {
+          my $text = shift;
+          my @octets = unpack('C4', $text);
+          return 'unknown' unless defined $octets[3];
+          return ( $octets[0] and  $octets[1]) ? 'UTF-8'
+               : (!$octets[0] and  $octets[1]) ? 'UTF-16BE'
+               : (!$octets[0] and !$octets[1]) ? 'UTF-32BE'
+               : ( $octets[2]                ) ? 'UTF-16LE'
+               : (!$octets[2]                ) ? 'UTF-32LE'
+               : 'unknown';
+      }
   
       sub PP_decode_json {
-          my ($self, $opt); # $opt is an effective flag during this decode_json.
+          my ($self, $want_offset);
   
-          ($self, $text, $opt) = @_;
+          ($self, $text, $want_offset) = @_;
   
           ($at, $ch, $depth) = (0, '', 0);
   
@@ -4993,13 +6566,19 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
               decode_error("malformed JSON string, neither array, object, number, string or atom");
           }
   
-          my $idx = $self->{PROPS};
+          my $props = $self->{PROPS};
   
-          ($utf8, $relaxed, $loose, $allow_bigint, $allow_barekey, $singlequote)
-              = @{$idx}[P_UTF8, P_RELAXED, P_LOOSE .. P_ALLOW_SINGLEQUOTE];
+          ($utf8, $relaxed, $loose, $allow_bignum, $allow_barekey, $singlequote)
+              = @{$props}[P_UTF8, P_RELAXED, P_LOOSE .. P_ALLOW_SINGLEQUOTE];
   
           if ( $utf8 ) {
-              utf8::downgrade( $text, 1 ) or Carp::croak("Wide character in subroutine entry");
+              $encoding = _detect_utf_encoding($text);
+              if ($encoding ne 'UTF-8' and $encoding ne 'unknown') {
+                  require Encode;
+                  Encode::from_to($text, $encoding, 'utf-8');
+              } else {
+                  utf8::downgrade( $text, 1 ) or Carp::croak("Wide character in subroutine entry");
+              }
           }
           else {
               utf8::upgrade( $text );
@@ -5020,27 +6599,13 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
               ) if ($bytes > $max_size);
           }
   
-          # Currently no effect
-          # should use regexp
-          my @octets = unpack('C4', $text);
-          $encoding =   ( $octets[0] and  $octets[1]) ? 'UTF-8'
-                      : (!$octets[0] and  $octets[1]) ? 'UTF-16BE'
-                      : (!$octets[0] and !$octets[1]) ? 'UTF-32BE'
-                      : ( $octets[2]                ) ? 'UTF-16LE'
-                      : (!$octets[2]                ) ? 'UTF-32LE'
-                      : 'unknown';
-  
           white(); # remove head white space
   
-          my $valid_start = defined $ch; # Is there a first character for JSON structure?
+          decode_error("malformed JSON string, neither array, object, number, string or atom") unless defined $ch; # Is there a first character for JSON structure?
   
           my $result = value();
   
-          return undef if ( !$result && ( $opt & 0x10000000 ) ); # for incr_parse
-  
-          decode_error("malformed JSON string, neither array, object, number, string or atom") unless $valid_start;
-  
-          if ( !$idx->[ P_ALLOW_NONREF ] and !ref $result ) {
+          if ( !$props->[ P_ALLOW_NONREF ] and !ref $result ) {
                   decode_error(
                   'JSON text must be an object or array (but found number, string, true, false or null,'
                          . ' use allow_nonref to allow this)', 1);
@@ -5052,12 +6617,11 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   
           white(); # remove tail white space
   
-          if ( $ch ) {
-              return ( $result, $consumed ) if ($opt & 0x00000001); # all right if decode_prefix
-              decode_error("garbage after JSON object");
-          }
+          return ( $result, $consumed ) if $want_offset; # all right if decode_prefix
   
-          ( $opt & 0x00000001 ) ? ( $result, $consumed ) : $result;
+          decode_error("garbage after JSON object") if defined $ch;
+  
+          $result;
       }
   
   
@@ -5078,13 +6642,12 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
       }
   
       sub string {
-          my ($i, $s, $t, $u);
           my $utf16;
           my $is_utf8;
   
           ($is_valid_utf8, $utf8_len) = ('', 0);
   
-          $s = ''; # basically UTF8 flag on
+          my $s = ''; # basically UTF8 flag on
   
           if($ch eq '"' or ($singlequote and $ch eq "'")){
               my $boundChar = $ch;
@@ -5184,10 +6747,10 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   
       sub white {
           while( defined $ch  ){
-              if($ch le ' '){
+              if($ch eq '' or $ch =~ /\A[ \t\r\n]\z/){
                   next_chr();
               }
-              elsif($ch eq '/'){
+              elsif($relaxed and $ch eq '/'){
                   next_chr();
                   if(defined $ch and $ch eq '/'){
                       1 while(defined(next_chr()) and $ch ne "\n" and $ch ne "\r");
@@ -5278,6 +6841,7 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
               }
           }
   
+          $at-- if defined $ch and $ch ne '';
           decode_error(", or ] expected while parsing array");
       }
   
@@ -5344,7 +6908,7 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   
           }
   
-          $at--;
+          $at-- if defined $ch and $ch ne '';
           decode_error(", or } expected while parsing object/hash");
       }
   
@@ -5394,32 +6958,7 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
           my $n    = '';
           my $v;
           my $is_dec;
-  
-          # According to RFC4627, hex or oct digits are invalid.
-          if($ch eq '0'){
-              my $peek = substr($text,$at,1);
-              my $hex  = $peek =~ /[xX]/; # 0 or 1
-  
-              if($hex){
-                  decode_error("malformed number (leading zero must not be followed by another digit)");
-                  ($n) = ( substr($text, $at+1) =~ /^([0-9a-fA-F]+)/);
-              }
-              else{ # oct
-                  ($n) = ( substr($text, $at) =~ /^([0-7]+)/);
-                  if (defined $n and length $n > 1) {
-                      decode_error("malformed number (leading zero must not be followed by another digit)");
-                  }
-              }
-  
-              if(defined $n and length($n)){
-                  if (!$hex and length($n) == 1) {
-                     decode_error("malformed number (leading zero must not be followed by another digit)");
-                  }
-                  $at += length($n) + $hex;
-                  next_chr;
-                  return $hex ? hex($n) : oct($n);
-              }
-          }
+          my $is_exp;
   
           if($ch eq '-'){
               $n = '-';
@@ -5427,6 +6966,16 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
               if (!defined $ch or $ch !~ /\d/) {
                   decode_error("malformed number (no digits after initial minus)");
               }
+          }
+  
+          # According to RFC4627, hex or oct digits are invalid.
+          if($ch eq '0'){
+              my $peek = substr($text,$at,1);
+              if($peek =~ /^[0-9a-dfA-DF]/){ # e may be valid (exponential)
+                  decode_error("malformed number (leading zero must not be followed by another digit)");
+              }
+              $n .= $ch;
+              next_chr;
           }
   
           while(defined $ch and $ch =~ /\d/){
@@ -5453,6 +7002,7 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   
           if(defined $ch and ($ch eq 'e' or $ch eq 'E')){
               $n .= $ch;
+              $is_exp = 1;
               next_chr;
   
               if(defined($ch) and ($ch eq '+' or $ch eq '-')){
@@ -5478,18 +7028,21 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   
           $v .= $n;
   
-          if ($v !~ /[.eE]/ and length $v > $max_intsize) {
-              if ($allow_bigint) { # from Adam Sussman
-                  require Math::BigInt;
-                  return Math::BigInt->new($v);
+          if ($is_dec or $is_exp) {
+              if ($allow_bignum) {
+                  require Math::BigFloat;
+                  return Math::BigFloat->new($v);
               }
-              else {
-                  return "$v";
+          } else {
+              if (length $v > $max_intsize) {
+                  if ($allow_bignum) { # from Adam Sussman
+                      require Math::BigInt;
+                      return Math::BigInt->new($v);
+                  }
+                  else {
+                      return "$v";
+                  }
               }
-          }
-          elsif ($allow_bigint) {
-              require Math::BigFloat;
-              return Math::BigFloat->new($v);
           }
   
           return $is_dec ? $v/1.0 : 0+$v;
@@ -5528,11 +7081,14 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
           my $no_rep = shift;
           my $str    = defined $text ? substr($text, $at) : '';
           my $mess   = '';
-          my $type   = $] >= 5.008           ? 'U*'
-                     : $] <  5.006           ? 'C*'
-                     : utf8::is_utf8( $str ) ? 'U*' # 5.6
-                     : 'C*'
-                     ;
+          my $type   = 'U*';
+  
+          if ( OLD_PERL ) {
+              my $type   =  $] <  5.006           ? 'C*'
+                          : utf8::is_utf8( $str ) ? 'U*' # 5.6
+                          : 'C*'
+                          ;
+          }
   
           for my $c ( unpack( $type, $str ) ) { # emulate pv_uni_display() ?
               $mess .=  $c == 0x07 ? '\a'
@@ -5623,26 +7179,26 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
          *utf8::is_utf8 = *Encode::is_utf8;
       }
   
-      if ( $] >= 5.008 ) {
+      if ( !OLD_PERL ) {
           *JSON::PP::JSON_PP_encode_ascii      = \&_encode_ascii;
           *JSON::PP::JSON_PP_encode_latin1     = \&_encode_latin1;
           *JSON::PP::JSON_PP_decode_surrogates = \&_decode_surrogates;
           *JSON::PP::JSON_PP_decode_unicode    = \&_decode_unicode;
-      }
   
-      if ($] >= 5.008 and $] < 5.008003) { # join() in 5.8.0 - 5.8.2 is broken.
-          package JSON::PP;
-          require subs;
-          subs->import('join');
-          eval q|
-              sub join {
-                  return '' if (@_ < 2);
-                  my $j   = shift;
-                  my $str = shift;
-                  for (@_) { $str .= $j . $_; }
-                  return $str;
-              }
-          |;
+          if ($] < 5.008003) { # join() in 5.8.0 - 5.8.2 is broken.
+              package JSON::PP;
+              require subs;
+              subs->import('join');
+              eval q|
+                  sub join {
+                      return '' if (@_ < 2);
+                      my $j   = shift;
+                      my $str = shift;
+                      for (@_) { $str .= $j . $_; }
+                      return $str;
+                  }
+              |;
+          }
       }
   
   
@@ -5665,7 +7221,7 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
           sub JSON::PP::incr_text : lvalue {
               $_[0]->{_incr_parser} ||= JSON::PP::IncrParser->new;
   
-              if ( $_[0]->{_incr_parser}->{incr_parsing} ) {
+              if ( $_[0]->{_incr_parser}->{incr_pos} ) {
                   Carp::croak("incr_text cannot be called when the incremental parser already started parsing");
               }
               $_[0]->{_incr_parser}->{incr_text};
@@ -5686,13 +7242,14 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
           *JSON::PP::reftype = \&Scalar::Util::reftype;
           *JSON::PP::refaddr = \&Scalar::Util::refaddr;
       }
-      else{ # This code is from Sclar::Util.
+      else{ # This code is from Scalar::Util.
           # warn $@;
           eval 'sub UNIVERSAL::a_sub_not_likely_to_be_here { ref($_[0]) }';
           *JSON::PP::blessed = sub {
               local($@, $SIG{__DIE__}, $SIG{__WARN__});
               ref($_[0]) ? eval { $_[0]->a_sub_not_likely_to_be_here } : undef;
           };
+          require B;
           my %tmap = qw(
               B::NULL   SCALAR
               B::HV     HASH
@@ -5748,18 +7305,6 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   
   ###############################
   
-  package JSON::PP::Boolean;
-  
-  use overload (
-     "0+"     => sub { ${$_[0]} },
-     "++"     => sub { $_[0] = ${$_[0]} + 1 },
-     "--"     => sub { $_[0] = ${$_[0]} - 1 },
-     fallback => 1,
-  );
-  
-  
-  ###############################
-  
   package JSON::PP::IncrParser;
   
   use strict;
@@ -5773,16 +7318,14 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   
   $JSON::PP::IncrParser::VERSION = '1.01';
   
-  my $unpack_format = $] < 5.006 ? 'C*' : 'U*';
-  
   sub new {
       my ( $class ) = @_;
   
       bless {
           incr_nest    => 0,
           incr_text    => undef,
-          incr_parsing => 0,
-          incr_p       => 0,
+          incr_pos     => 0,
+          incr_mode    => 0,
       }, $class;
   }
   
@@ -5800,122 +7343,150 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
           $self->{incr_text} .= $text;
       }
   
-  
-      my $max_size = $coder->get_max_size;
-  
       if ( defined wantarray ) {
-  
-          $self->{incr_mode} = INCR_M_WS unless defined $self->{incr_mode};
-  
-          if ( wantarray ) {
-              my @ret;
-  
-              $self->{incr_parsing} = 1;
-  
+          my $max_size = $coder->get_max_size;
+          my $p = $self->{incr_pos};
+          my @ret;
+          {
               do {
-                  push @ret, $self->_incr_parse( $coder, $self->{incr_text} );
+                  unless ( $self->{incr_nest} <= 0 and $self->{incr_mode} == INCR_M_JSON ) {
+                      $self->_incr_parse( $coder );
   
-                  unless ( !$self->{incr_nest} and $self->{incr_mode} == INCR_M_JSON ) {
-                      $self->{incr_mode} = INCR_M_WS if $self->{incr_mode} != INCR_M_STR;
+                      if ( $max_size and $self->{incr_pos} > $max_size ) {
+                          Carp::croak("attempted decode of JSON text of $self->{incr_pos} bytes size, but max_size is set to $max_size");
+                      }
+                      unless ( $self->{incr_nest} <= 0 and $self->{incr_mode} == INCR_M_JSON ) {
+                          # as an optimisation, do not accumulate white space in the incr buffer
+                          if ( $self->{incr_mode} == INCR_M_WS and $self->{incr_pos} ) {
+                              $self->{incr_pos} = 0;
+                              $self->{incr_text} = '';
+                          }
+                          last;
+                      }
                   }
   
-              } until ( length $self->{incr_text} >= $self->{incr_p} );
+                  my ($obj, $offset) = $coder->PP_decode_json( $self->{incr_text}, 0x00000001 );
+                  push @ret, $obj;
+                  use bytes;
+                  $self->{incr_text} = substr( $self->{incr_text}, $offset || 0 );
+                  $self->{incr_pos} = 0;
+                  $self->{incr_nest} = 0;
+                  $self->{incr_mode} = 0;
+                  last unless wantarray;
+              } while ( wantarray );
+          }
   
-              $self->{incr_parsing} = 0;
-  
+          if ( wantarray ) {
               return @ret;
           }
           else { # in scalar context
-              $self->{incr_parsing} = 1;
-              my $obj = $self->_incr_parse( $coder, $self->{incr_text} );
-              $self->{incr_parsing} = 0 if defined $obj; # pointed by Martin J. Evans
-              return $obj ? $obj : undef; # $obj is an empty string, parsing was completed.
+              return $ret[0] ? $ret[0] : undef;
           }
-  
       }
-  
   }
   
   
   sub _incr_parse {
-      my ( $self, $coder, $text, $skip ) = @_;
-      my $p = $self->{incr_p};
-      my $restore = $p;
-  
-      my @obj;
+      my ($self, $coder) = @_;
+      my $text = $self->{incr_text};
       my $len = length $text;
+      my $p = $self->{incr_pos};
   
-      if ( $self->{incr_mode} == INCR_M_WS ) {
-          while ( $len > $p ) {
-              my $s = substr( $text, $p, 1 );
-              $p++ and next if ( 0x20 >= unpack($unpack_format, $s) );
-              $self->{incr_mode} = INCR_M_JSON;
-              last;
-         }
-      }
-  
+  INCR_PARSE:
       while ( $len > $p ) {
-          my $s = substr( $text, $p++, 1 );
+          my $s = substr( $text, $p, 1 );
+          last INCR_PARSE unless defined $s;
+          my $mode = $self->{incr_mode};
   
-          if ( $s eq '"' ) {
-              if (substr( $text, $p - 2, 1 ) eq '\\' ) {
-                  next;
+          if ( $mode == INCR_M_WS ) {
+              while ( $len > $p ) {
+                  $s = substr( $text, $p, 1 );
+                  last INCR_PARSE unless defined $s;
+                  if ( ord($s) > 0x20 ) {
+                      if ( $s eq '#' ) {
+                          $self->{incr_mode} = INCR_M_C0;
+                          redo INCR_PARSE;
+                      } else {
+                          $self->{incr_mode} = INCR_M_JSON;
+                          redo INCR_PARSE;
+                      }
+                  }
+                  $p++;
               }
-  
-              if ( $self->{incr_mode} != INCR_M_STR  ) {
-                  $self->{incr_mode} = INCR_M_STR;
-              }
-              else {
-                  $self->{incr_mode} = INCR_M_JSON;
-                  unless ( $self->{incr_nest} ) {
+          } elsif ( $mode == INCR_M_BS ) {
+              $p++;
+              $self->{incr_mode} = INCR_M_STR;
+              redo INCR_PARSE;
+          } elsif ( $mode == INCR_M_C0 or $mode == INCR_M_C1 ) {
+              while ( $len > $p ) {
+                  $s = substr( $text, $p, 1 );
+                  last INCR_PARSE unless defined $s;
+                  if ( $s eq "\n" ) {
+                      $self->{incr_mode} = $self->{incr_mode} == INCR_M_C0 ? INCR_M_WS : INCR_M_JSON;
                       last;
                   }
+                  $p++;
               }
-          }
+              next;
+          } elsif ( $mode == INCR_M_STR ) {
+              while ( $len > $p ) {
+                  $s = substr( $text, $p, 1 );
+                  last INCR_PARSE unless defined $s;
+                  if ( $s eq '"' ) {
+                      $p++;
+                      $self->{incr_mode} = INCR_M_JSON;
   
-          if ( $self->{incr_mode} == INCR_M_JSON ) {
-  
-              if ( $s eq '[' or $s eq '{' ) {
-                  if ( ++$self->{incr_nest} > $coder->get_max_depth ) {
-                      Carp::croak('json text or perl structure exceeds maximum nesting level (max_depth set too low?)');
+                      last INCR_PARSE unless $self->{incr_nest};
+                      redo INCR_PARSE;
+                  }
+                  elsif ( $s eq '\\' ) {
+                      $p++;
+                      if ( !defined substr($text, $p, 1) ) {
+                          $self->{incr_mode} = INCR_M_BS;
+                          last INCR_PARSE;
+                      }
+                  }
+                  $p++;
+              }
+          } elsif ( $mode == INCR_M_JSON ) {
+              while ( $len > $p ) {
+                  $s = substr( $text, $p++, 1 );
+                  if ( $s eq "\x00" ) {
+                      $p--;
+                      last INCR_PARSE;
+                  } elsif ( $s eq "\x09" or $s eq "\x0a" or $s eq "\x0d" or $s eq "\x20" ) {
+                      if ( !$self->{incr_nest} ) {
+                          $p--; # do not eat the whitespace, let the next round do it
+                          last INCR_PARSE;
+                      }
+                      next;
+                  } elsif ( $s eq '"' ) {
+                      $self->{incr_mode} = INCR_M_STR;
+                      redo INCR_PARSE;
+                  } elsif ( $s eq '[' or $s eq '{' ) {
+                      if ( ++$self->{incr_nest} > $coder->get_max_depth ) {
+                          Carp::croak('json text or perl structure exceeds maximum nesting level (max_depth set too low?)');
+                      }
+                      next;
+                  } elsif ( $s eq ']' or $s eq '}' ) {
+                      if ( --$self->{incr_nest} <= 0 ) {
+                          last INCR_PARSE;
+                      }
+                  } elsif ( $s eq '#' ) {
+                      $self->{incr_mode} = INCR_M_C1;
+                      redo INCR_PARSE;
                   }
               }
-              elsif ( $s eq ']' or $s eq '}' ) {
-                  last if ( --$self->{incr_nest} <= 0 );
-              }
-              elsif ( $s eq '#' ) {
-                  while ( $len > $p ) {
-                      last if substr( $text, $p++, 1 ) eq "\n";
-                  }
-              }
-  
           }
-  
       }
   
-      $self->{incr_p} = $p;
-  
-      return if ( $self->{incr_mode} == INCR_M_STR and not $self->{incr_nest} );
-      return if ( $self->{incr_mode} == INCR_M_JSON and $self->{incr_nest} > 0 );
-  
-      return '' unless ( length substr( $self->{incr_text}, 0, $p ) );
-  
-      local $Carp::CarpLevel = 2;
-  
-      $self->{incr_p} = $restore;
-      $self->{incr_c} = $p;
-  
-      my ( $obj, $tail ) = $coder->PP_decode_json( substr( $self->{incr_text}, 0, $p ), 0x10000001 );
-  
-      $self->{incr_text} = substr( $self->{incr_text}, $p );
-      $self->{incr_p} = 0;
-  
-      return $obj || '';
+      $self->{incr_pos} = $p;
+      $self->{incr_parsing} = $p ? 1 : 0; # for backward compatibility
   }
   
   
   sub incr_text {
-      if ( $_[0]->{incr_parsing} ) {
+      if ( $_[0]->{incr_pos} ) {
           Carp::croak("incr_text cannot be called when the incremental parser already started parsing");
       }
       $_[0]->{incr_text};
@@ -5924,18 +7495,19 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   
   sub incr_skip {
       my $self  = shift;
-      $self->{incr_text} = substr( $self->{incr_text}, $self->{incr_c} );
-      $self->{incr_p} = 0;
+      $self->{incr_text} = substr( $self->{incr_text}, $self->{incr_pos} );
+      $self->{incr_pos}     = 0;
+      $self->{incr_mode}    = 0;
+      $self->{incr_nest}    = 0;
   }
   
   
   sub incr_reset {
       my $self = shift;
       $self->{incr_text}    = undef;
-      $self->{incr_p}       = 0;
+      $self->{incr_pos}     = 0;
       $self->{incr_mode}    = 0;
       $self->{incr_nest}    = 0;
-      $self->{incr_parsing} = 0;
   }
   
   ###############################
@@ -5961,12 +7533,10 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   
    # OO-interface
   
-   $coder = JSON::PP->new->ascii->pretty->allow_nonref;
+   $json = JSON::PP->new->ascii->pretty->allow_nonref;
    
-   $json_text   = $json->encode( $perl_scalar );
+   $pretty_printed_json_text = $json->encode( $perl_scalar );
    $perl_scalar = $json->decode( $json_text );
-   
-   $pretty_printed = $json->pretty->encode( $perl_scalar ); # pretty-printing
    
    # Note that JSON version 2.0 and above will automatically use
    # JSON::XS or JSON::PP, so you should be able to just:
@@ -5976,68 +7546,46 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   
   =head1 VERSION
   
-      2.27400
-  
-  L<JSON::XS> 2.27 (~2.30) compatible.
-  
-  =head1 NOTE
-  
-  JSON::PP had been included in JSON distribution (CPAN module).
-  It was a perl core module in Perl 5.14.
+      2.91_04
   
   =head1 DESCRIPTION
   
-  This module is L<JSON::XS> compatible pure Perl module.
-  (Perl 5.8 or later is recommended)
+  JSON::PP is a pure perl JSON decoder/encoder (as of RFC4627, which
+  we know is obsolete but we still stick to; see below for an option
+  to support part of RFC7159), and (almost) compatible to much
+  faster L<JSON::XS> written by Marc Lehmann in C. JSON::PP works as
+  a fallback module when you use L<JSON> module without having
+  installed JSON::XS.
   
-  JSON::XS is the fastest and most proper JSON module on CPAN.
-  It is written by Marc Lehmann in C, so must be compiled and
-  installed in the used environment.
+  Because of this fallback feature of JSON.pm, JSON::PP tries not to
+  be more JavaScript-friendly than JSON::XS (i.e. not to escape extra
+  characters such as U+2028 and U+2029 nor support RFC7159/ECMA-404),
+  in order for you not to lose such JavaScript-friendliness silently
+  when you use JSON.pm and install JSON::XS for speed or by accident.
+  If you need JavaScript-friendly RFC7159-compliant pure perl module,
+  try L<JSON::Tiny>, which is derived from L<Mojolicious> web
+  framework and is also smaller and faster than JSON::PP.
   
-  JSON::PP is a pure-Perl module and has compatibility to JSON::XS.
-  
-  
-  =head2 FEATURES
-  
-  =over
-  
-  =item * correct unicode handling
-  
-  This module knows how to handle Unicode (depending on Perl version).
-  
-  See to L<JSON::XS/A FEW NOTES ON UNICODE AND PERL> and L<UNICODE HANDLING ON PERLS>.
-  
-  
-  =item * round-trip integrity
-  
-  When you serialise a perl data structure using only data types supported
-  by JSON and Perl, the deserialised data structure is identical on the Perl
-  level. (e.g. the string "2.0" doesn't suddenly become "2" just because
-  it looks like a number). There I<are> minor exceptions to this, read the
-  MAPPING section below to learn about those.
-  
-  
-  =item * strict checking of JSON correctness
-  
-  There is no guessing, no generating of illegal JSON texts by default,
-  and only JSON is accepted as input by default (the latter is a security feature).
-  But when some options are set, loose checking features are available.
-  
-  =back
+  JSON::PP has been in the Perl core since Perl 5.14, mainly for
+  CPAN toolchain modules to parse META.json.
   
   =head1 FUNCTIONAL INTERFACE
   
-  Some documents are copied and modified from L<JSON::XS/FUNCTIONAL INTERFACE>.
+  This section is taken from JSON::XS almost verbatim. C<encode_json>
+  and C<decode_json> are exported by default.
   
   =head2 encode_json
   
       $json_text = encode_json $perl_scalar
   
-  Converts the given Perl data structure to a UTF-8 encoded, binary string.
+  Converts the given Perl data structure to a UTF-8 encoded, binary string
+  (that is, the string contains octets only). Croaks on error.
   
   This function call is functionally identical to:
   
       $json_text = JSON::PP->new->utf8->encode($perl_scalar)
+  
+  Except being faster.
   
   =head2 decode_json
   
@@ -6045,11 +7593,13 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   
   The opposite of C<encode_json>: expects an UTF-8 (binary) string and tries
   to parse that as an UTF-8 encoded JSON text, returning the resulting
-  reference.
+  reference. Croaks on error.
   
   This function call is functionally identical to:
   
       $perl_scalar = JSON::PP->new->utf8->decode($json_text)
+  
+  Except being faster.
   
   =head2 JSON::PP::is_bool
   
@@ -6059,114 +7609,24 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   JSON::PP::false, two constants that act like C<1> and C<0> respectively
   and are also used to represent JSON C<true> and C<false> in Perl strings.
   
-  =head2 JSON::PP::true
-  
-  Returns JSON true value which is blessed object.
-  It C<isa> JSON::PP::Boolean object.
-  
-  =head2 JSON::PP::false
-  
-  Returns JSON false value which is blessed object.
-  It C<isa> JSON::PP::Boolean object.
-  
-  =head2 JSON::PP::null
-  
-  Returns C<undef>.
-  
   See L<MAPPING>, below, for more information on how JSON values are mapped to
   Perl.
   
+  =head1 OBJECT-ORIENTED INTERFACE
   
-  =head1 HOW DO I DECODE A DATA FROM OUTER AND ENCODE TO OUTER
+  This section is also taken from JSON::XS.
   
-  This section supposes that your perl version is 5.8 or later.
-  
-  If you know a JSON text from an outer world - a network, a file content, and so on,
-  is encoded in UTF-8, you should use C<decode_json> or C<JSON> module object
-  with C<utf8> enabled. And the decoded result will contain UNICODE characters.
-  
-    # from network
-    my $json        = JSON::PP->new->utf8;
-    my $json_text   = CGI->new->param( 'json_data' );
-    my $perl_scalar = $json->decode( $json_text );
-    
-    # from file content
-    local $/;
-    open( my $fh, '<', 'json.data' );
-    $json_text   = <$fh>;
-    $perl_scalar = decode_json( $json_text );
-  
-  If an outer data is not encoded in UTF-8, firstly you should C<decode> it.
-  
-    use Encode;
-    local $/;
-    open( my $fh, '<', 'json.data' );
-    my $encoding = 'cp932';
-    my $unicode_json_text = decode( $encoding, <$fh> ); # UNICODE
-    
-    # or you can write the below code.
-    #
-    # open( my $fh, "<:encoding($encoding)", 'json.data' );
-    # $unicode_json_text = <$fh>;
-  
-  In this case, C<$unicode_json_text> is of course UNICODE string.
-  So you B<cannot> use C<decode_json> nor C<JSON> module object with C<utf8> enabled.
-  Instead of them, you use C<JSON> module object with C<utf8> disable.
-  
-    $perl_scalar = $json->utf8(0)->decode( $unicode_json_text );
-  
-  Or C<encode 'utf8'> and C<decode_json>:
-  
-    $perl_scalar = decode_json( encode( 'utf8', $unicode_json_text ) );
-    # this way is not efficient.
-  
-  And now, you want to convert your C<$perl_scalar> into JSON data and
-  send it to an outer world - a network or a file content, and so on.
-  
-  Your data usually contains UNICODE strings and you want the converted data to be encoded
-  in UTF-8, you should use C<encode_json> or C<JSON> module object with C<utf8> enabled.
-  
-    print encode_json( $perl_scalar ); # to a network? file? or display?
-    # or
-    print $json->utf8->encode( $perl_scalar );
-  
-  If C<$perl_scalar> does not contain UNICODE but C<$encoding>-encoded strings
-  for some reason, then its characters are regarded as B<latin1> for perl
-  (because it does not concern with your $encoding).
-  You B<cannot> use C<encode_json> nor C<JSON> module object with C<utf8> enabled.
-  Instead of them, you use C<JSON> module object with C<utf8> disable.
-  Note that the resulted text is a UNICODE string but no problem to print it.
-  
-    # $perl_scalar contains $encoding encoded string values
-    $unicode_json_text = $json->utf8(0)->encode( $perl_scalar );
-    # $unicode_json_text consists of characters less than 0x100
-    print $unicode_json_text;
-  
-  Or C<decode $encoding> all string values and C<encode_json>:
-  
-    $perl_scalar->{ foo } = decode( $encoding, $perl_scalar->{ foo } );
-    # ... do it to each string values, then encode_json
-    $json_text = encode_json( $perl_scalar );
-  
-  This method is a proper way but probably not efficient.
-  
-  See to L<Encode>, L<perluniintro>.
-  
-  
-  =head1 METHODS
-  
-  Basically, check to L<JSON> or L<JSON::XS>.
+  The object oriented interface lets you configure your own encoding or
+  decoding style, within the limits of supported formats.
   
   =head2 new
   
       $json = JSON::PP->new
   
-  Returns a new JSON::PP object that can be used to de/encode JSON
-  strings.
+  Creates a new JSON::PP object that can be used to de/encode JSON
+  strings. All boolean flags described below are by default I<disabled>.
   
-  All boolean flags described below are by default I<disabled>.
-  
-  The mutators for flags all return the JSON object again and thus calls can
+  The mutators for flags all return the JSON::PP object again and thus calls can
   be chained:
   
      my $json = JSON::PP->new->utf8->space_after->encode({a => [1,2]})
@@ -6178,16 +7638,23 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
       
       $enabled = $json->get_ascii
   
-  If $enable is true (or missing), then the encode method will not generate characters outside
-  the code range 0..127. Any Unicode characters outside that range will be escaped using either
-  a single \uXXXX or a double \uHHHH\uLLLLL escape sequence, as per RFC4627.
-  (See to L<JSON::XS/OBJECT-ORIENTED INTERFACE>).
+  If C<$enable> is true (or missing), then the C<encode> method will not
+  generate characters outside the code range C<0..127> (which is ASCII). Any
+  Unicode characters outside that range will be escaped using either a
+  single \uXXXX (BMP characters) or a double \uHHHH\uLLLLL escape sequence,
+  as per RFC4627. The resulting encoded JSON text can be treated as a native
+  Unicode string, an ascii-encoded, latin1-encoded or UTF-8 encoded string,
+  or any other superset of ASCII.
   
-  In Perl 5.005, there is no character having high value (more than 255).
-  See to L<UNICODE HANDLING ON PERLS>.
+  If C<$enable> is false, then the C<encode> method will not escape Unicode
+  characters unless required by the JSON syntax or other flags. This results
+  in a faster and more compact format.
   
-  If $enable is false, then the encode method will not escape Unicode characters unless
-  required by the JSON syntax or other flags. This results in a faster and more compact format.
+  See also the section I<ENCODING/CODESET FLAG NOTES> later in this document.
+  
+  The main use for this flag is to produce JSON texts that can be
+  transmitted over a 7-bit channel, as the encoded JSON texts will not
+  contain any 8 bit characters.
   
     JSON::PP->new->ascii(1)->encode([chr 0x10401])
     => ["\ud801\udc01"]
@@ -6198,16 +7665,28 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
       
       $enabled = $json->get_latin1
   
-  If $enable is true (or missing), then the encode method will encode the resulting JSON
-  text as latin1 (or iso-8859-1), escaping any characters outside the code range 0..255.
+  If C<$enable> is true (or missing), then the C<encode> method will encode
+  the resulting JSON text as latin1 (or iso-8859-1), escaping any characters
+  outside the code range C<0..255>. The resulting string can be treated as a
+  latin1-encoded JSON text or a native Unicode string. The C<decode> method
+  will not be affected in any way by this flag, as C<decode> by default
+  expects Unicode, which is a strict superset of latin1.
   
-  If $enable is false, then the encode method will not escape Unicode characters
-  unless required by the JSON syntax or other flags.
+  If C<$enable> is false, then the C<encode> method will not escape Unicode
+  characters unless required by the JSON syntax or other flags.
   
-    JSON::XS->new->latin1->encode (["\x{89}\x{abc}"]
+  See also the section I<ENCODING/CODESET FLAG NOTES> later in this document.
+  
+  The main use for this flag is efficiently encoding binary data as JSON
+  text, as most octets will not be escaped, resulting in a smaller encoded
+  size. The disadvantage is that the resulting JSON text is encoded
+  in latin1 (and must correctly be treated as such when storing and
+  transferring), a rare encoding for JSON. It is therefore most useful when
+  you want to store data structures known to contain binary data efficiently
+  in files or databases, not when talking to other JSON encoders/decoders.
+  
+    JSON::PP->new->latin1->encode (["\x{89}\x{abc}"]
     => ["\x{89}\\u0abc"]    # (perl syntax, U+abc escaped, U+89 not)
-  
-  See to L<UNICODE HANDLING ON PERLS>.
   
   =head2 utf8
   
@@ -6215,20 +7694,20 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
       
       $enabled = $json->get_utf8
   
-  If $enable is true (or missing), then the encode method will encode the JSON result
-  into UTF-8, as required by many protocols, while the decode method expects to be handled
-  an UTF-8-encoded string. Please note that UTF-8-encoded strings do not contain any
-  characters outside the range 0..255, they are thus useful for bytewise/binary I/O.
+  If C<$enable> is true (or missing), then the C<encode> method will encode
+  the JSON result into UTF-8, as required by many protocols, while the
+  C<decode> method expects to be handled an UTF-8-encoded string.  Please
+  note that UTF-8-encoded strings do not contain any characters outside the
+  range C<0..255>, they are thus useful for bytewise/binary I/O. In future
+  versions, enabling this option might enable autodetection of the UTF-16
+  and UTF-32 encoding families, as described in RFC4627.
   
-  (In Perl 5.005, any character outside the range 0..255 does not exist.
-  See to L<UNICODE HANDLING ON PERLS>.)
+  If C<$enable> is false, then the C<encode> method will return the JSON
+  string as a (non-encoded) Unicode string, while C<decode> expects thus a
+  Unicode string.  Any decoding or encoding (e.g. to UTF-8 or UTF-16) needs
+  to be done yourself, e.g. using the Encode module.
   
-  In future versions, enabling this option might enable autodetection of the UTF-16 and UTF-32
-  encoding families, as described in RFC4627.
-  
-  If $enable is false, then the encode method will return the JSON string as a (non-encoded)
-  Unicode string, while decode expects thus a Unicode string. Any decoding or encoding
-  (e.g. to UTF-8 or UTF-16) needs to be done yourself, e.g. using the Encode module.
+  See also the section I<ENCODING/CODESET FLAG NOTES> later in this document.
   
   Example, output UTF-16BE-encoded JSON:
   
@@ -6240,24 +7719,28 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
     use Encode;
     $object = JSON::PP->new->decode (decode "UTF-32LE", $jsontext);
   
-  
   =head2 pretty
   
       $json = $json->pretty([$enable])
   
   This enables (or disables) all of the C<indent>, C<space_before> and
-  C<space_after> flags in one call to generate the most readable
-  (or most compact) form possible.
-  
-  Equivalent to:
-  
-     $json->indent->space_before->space_after
+  C<space_after> (and in the future possibly more) flags in one call to
+  generate the most readable (or most compact) form possible.
   
   =head2 indent
   
       $json = $json->indent([$enable])
       
       $enabled = $json->get_indent
+  
+  If C<$enable> is true (or missing), then the C<encode> method will use a multiline
+  format as output, putting every array member or object/hash key-value pair
+  into its own line, indenting them properly.
+  
+  If C<$enable> is false, no newlines or indenting will be produced, and the
+  resulting JSON text is guaranteed not to contain any C<newlines>.
+  
+  This setting has no effect when decoding JSON texts.
   
   The default indent space length is three.
   You can use C<indent_length> to change the length.
@@ -6274,7 +7757,8 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   If C<$enable> is false, then the C<encode> method will not add any extra
   space at those places.
   
-  This setting has no effect when decoding JSON texts.
+  This setting has no effect when decoding JSON texts. You will also
+  most likely combine this setting with C<space_after>.
   
   Example, space_before enabled, space_after and indent disabled:
   
@@ -6347,6 +7831,28 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
           # neither this one...
     ]
   
+  =item * C-style multiple-line '/* */'-comments (JSON::PP only)
+  
+  Whenever JSON allows whitespace, C-style multiple-line comments are additionally
+  allowed. Everything between C</*> and C<*/> is a comment, after which
+  more white-space and comments are allowed.
+  
+    [
+       1, /* this comment not allowed in JSON */
+          /* neither this one... */
+    ]
+  
+  =item * C++-style one-line '//'-comments (JSON::PP only)
+  
+  Whenever JSON allows whitespace, C++-style one-line comments are additionally
+  allowed. They are terminated by the first carriage-return or line-feed
+  character, after which more white-space and comments are allowed.
+  
+    [
+       1, // this comment not allowed in JSON
+          // neither this one...
+    ]
+  
   =back
   
   =head2 canonical
@@ -6360,7 +7866,8 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   
   If C<$enable> is false, then the C<encode> method will output key-value
   pairs in the order Perl stores them (which will likely change between runs
-  of the same script).
+  of the same script, and can change even within the same run from 5.18
+  onwards).
   
   This option is useful if you want the same data structure to be encoded as
   the same JSON text (given the same overall settings). If it is disabled,
@@ -6369,8 +7876,7 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   
   This setting has no effect when decoding JSON texts.
   
-  If you want your own sorting routine, you can give a code reference
-  or a subroutine name to C<sort_by>. See to C<JSON::PP OWN METHODS>.
+  This setting has currently no effect on tied hashes.
   
   =head2 allow_nonref
   
@@ -6388,6 +7894,9 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   or array. Likewise, C<decode> will croak if given something that is not a
   JSON object or array.
   
+  Example, encode a Perl scalar as JSON value with enabled C<allow_nonref>,
+  resulting in an invalid JSON text:
+  
      JSON::PP->new->allow_nonref->encode ("Hello, World!")
      => "Hello, World!"
   
@@ -6397,18 +7906,17 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
       
       $enabled = $json->get_allow_unknown
   
-  If $enable is true (or missing), then "encode" will *not* throw an
+  If C<$enable> is true (or missing), then C<encode> will I<not> throw an
   exception when it encounters values it cannot represent in JSON (for
-  example, filehandles) but instead will encode a JSON "null" value.
-  Note that blessed objects are not included here and are handled
-  separately by c<allow_nonref>.
+  example, filehandles) but instead will encode a JSON C<null> value. Note
+  that blessed objects are not included here and are handled separately by
+  c<allow_blessed>.
   
-  If $enable is false (the default), then "encode" will throw an
+  If C<$enable> is false (the default), then C<encode> will throw an
   exception when it encounters anything it cannot encode as JSON.
   
-  This option does not affect "decode" in any way, and it is
-  recommended to leave it off unless you know your communications
-  partner.
+  This option does not affect C<decode> in any way, and it is recommended to
+  leave it off unless you know your communications partner.
   
   =head2 allow_blessed
   
@@ -6416,15 +7924,17 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
       
       $enabled = $json->get_allow_blessed
   
+  See L<OBJECT SERIALISATION> for details.
+  
   If C<$enable> is true (or missing), then the C<encode> method will not
-  barf when it encounters a blessed reference. Instead, the value of the
-  B<convert_blessed> option will decide whether C<null> (C<convert_blessed>
-  disabled or no C<TO_JSON> method found) or a representation of the
-  object (C<convert_blessed> enabled and C<TO_JSON> method found) is being
-  encoded. Has no effect on C<decode>.
+  barf when it encounters a blessed reference that it cannot convert
+  otherwise. Instead, a JSON C<null> value is encoded instead of the object.
   
   If C<$enable> is false (the default), then C<encode> will throw an
-  exception when it encounters a blessed object.
+  exception when it encounters a blessed object that it cannot convert
+  otherwise.
+  
+  This setting has no effect on C<decode>.
   
   =head2 convert_blessed
   
@@ -6432,38 +7942,38 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
       
       $enabled = $json->get_convert_blessed
   
+  See L<OBJECT SERIALISATION> for details.
+  
   If C<$enable> is true (or missing), then C<encode>, upon encountering a
   blessed object, will check for the availability of the C<TO_JSON> method
-  on the object's class. If found, it will be called in scalar context
-  and the resulting scalar will be encoded instead of the object. If no
-  C<TO_JSON> method is found, the value of C<allow_blessed> will decide what
-  to do.
+  on the object's class. If found, it will be called in scalar context and
+  the resulting scalar will be encoded instead of the object.
   
   The C<TO_JSON> method may safely call die if it wants. If C<TO_JSON>
   returns other blessed objects, those will be handled in the same
   way. C<TO_JSON> must take care of not causing an endless recursion cycle
   (== crash) in this case. The name of C<TO_JSON> was chosen because other
   methods called by the Perl core (== not by the user of the object) are
-  usually in upper case letters and to avoid collisions with the C<to_json>
+  usually in upper case letters and to avoid collisions with any C<to_json>
   function or method.
   
-  This setting does not yet influence C<decode> in any way.
+  If C<$enable> is false (the default), then C<encode> will not consider
+  this type of conversion.
   
-  If C<$enable> is false, then the C<allow_blessed> setting will decide what
-  to do when a blessed object is found.
+  This setting has no effect on C<decode>.
   
   =head2 filter_json_object
   
       $json = $json->filter_json_object([$coderef])
   
   When C<$coderef> is specified, it will be called from C<decode> each
-  time it decodes a JSON object. The only argument passed to the coderef
-  is a reference to the newly-created hash. If the code references returns
-  a single scalar (which need not be a reference), this value
-  (i.e. a copy of that scalar to avoid aliasing) is inserted into the
-  deserialised data structure. If it returns an empty list
-  (NOTE: I<not> C<undef>, which is a valid scalar), the original deserialised
-  hash will be inserted. This setting can slow down decoding considerably.
+  time it decodes a JSON object. The only argument is a reference to the
+  newly-created hash. If the code references returns a single scalar (which
+  need not be a reference), this value (i.e. a copy of that scalar to avoid
+  aliasing) is inserted into the deserialised data structure. If it returns
+  an empty list (NOTE: I<not> C<undef>, which is a valid scalar), the
+  original deserialised hash will be inserted. This setting can slow down
+  decoding considerably.
   
   When C<$coderef> is omitted or undefined, any existing callback will
   be removed and C<decode> will not change the deserialised hash in any
@@ -6538,15 +8048,13 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
       
       $enabled = $json->get_shrink
   
-  In JSON::XS, this flag resizes strings generated by either
-  C<encode> or C<decode> to their minimum size possible.
-  It will also try to downgrade any strings to octet-form if possible.
+  If C<$enable> is true (or missing), the string returned by C<encode> will
+  be shrunk (i.e. downgraded if possible).
   
-  In JSON::PP, it is noop about resizing strings but tries
-  C<utf8::downgrade> to the returned string by C<encode>.
-  See to L<utf8>.
+  The actual definition of what shrink does might change in future versions,
+  but it will always try to save space at the expense of time.
   
-  See to L<JSON::XS/OBJECT-ORIENTED INTERFACE>
+  If C<$enable> is false, then JSON::PP does nothing.
   
   =head2 max_depth
   
@@ -6564,13 +8072,13 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   characters without their matching closing parenthesis crossed to reach a
   given character in a string.
   
+  Setting the maximum depth to one disallows any nesting, so that ensures
+  that the object is only a single hash/object or array.
+  
   If no argument is given, the highest possible setting will be used, which
   is rarely useful.
   
   See L<JSON::XS/SECURITY CONSIDERATIONS> for more info on why this is useful.
-  
-  When a large value (100 or more) was set and it de/encodes a deep nested object/text,
-  it may raise a warning 'Deep recursion on subroutine' at the perl runtime phase.
   
   =head2 max_size
   
@@ -6593,12 +8101,8 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   
       $json_text = $json->encode($perl_scalar)
   
-  Converts the given Perl data structure (a simple scalar or a reference
-  to a hash or array) to its JSON representation. Simple scalars will be
-  converted into JSON string or number sequences, while references to arrays
-  become JSON arrays and references to hashes become JSON objects. Undefined
-  Perl values (e.g. C<undef>) become JSON C<null> values.
-  References to the integers C<0> and C<1> are converted into C<true> and C<false>.
+  Converts the given Perl value or data structure to its JSON
+  representation. Croaks on error.
   
   =head2 decode
   
@@ -6606,11 +8110,6 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   
   The opposite of C<encode>: expects a JSON text and tries to parse it,
   returning the resulting simple scalar or reference. Croaks on error.
-  
-  JSON numbers and strings become simple Perl scalars. JSON arrays become
-  Perl arrayrefs and JSON objects become Perl hashrefs. C<true> becomes
-  C<1> (C<JSON::true>), C<false> becomes C<0> (C<JSON::false>) and
-  C<null> becomes C<undef>.
   
   =head2 decode_prefix
   
@@ -6621,25 +8120,185 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   silently stop parsing there and return the number of characters consumed
   so far.
   
-     JSON->new->decode_prefix ("[1] the tail")
-     => ([], 3)
+  This is useful if your JSON texts are not delimited by an outer protocol
+  and you need to know where the JSON text ends.
+  
+     JSON::PP->new->decode_prefix ("[1] the tail")
+     => ([1], 3)
+  
+  =head1 FLAGS FOR JSON::PP ONLY
+  
+  The following flags and properties are for JSON::PP only. If you use
+  any of these, you can't make your application run faster by replacing
+  JSON::PP with JSON::XS. If you need these and also speed boost,
+  try L<Cpanel::JSON::XS>, a fork of JSON::XS by Reini Urban, which
+  supports some of these.
+  
+  =head2 allow_singlequote
+  
+      $json = $json->allow_singlequote([$enable])
+      $enabled = $json->get_allow_singlequote
+  
+  If C<$enable> is true (or missing), then C<decode> will accept
+  invalid JSON texts that contain strings that begin and end with
+  single quotation marks. C<encode> will not be affected in anyway.
+  I<Be aware that this option makes you accept invalid JSON texts
+  as if they were valid!>. I suggest only to use this option to
+  parse application-specific files written by humans (configuration
+  files, resource files etc.)
+  
+  If C<$enable> is false (the default), then C<decode> will only accept
+  valid JSON texts.
+  
+      $json->allow_singlequote->decode(qq|{"foo":'bar'}|);
+      $json->allow_singlequote->decode(qq|{'foo':"bar"}|);
+      $json->allow_singlequote->decode(qq|{'foo':'bar'}|);
+  
+  =head2 allow_barekey
+  
+      $json = $json->allow_barekey([$enable])
+      $enabled = $json->get_allow_barekey
+  
+  If C<$enable> is true (or missing), then C<decode> will accept
+  invalid JSON texts that contain JSON objects whose names don't
+  begin and end with quotation marks. C<encode> will not be affected
+  in anyway. I<Be aware that this option makes you accept invalid JSON
+  texts as if they were valid!>. I suggest only to use this option to
+  parse application-specific files written by humans (configuration
+  files, resource files etc.)
+  
+  If C<$enable> is false (the default), then C<decode> will only accept
+  valid JSON texts.
+  
+      $json->allow_barekey->decode(qq|{foo:"bar"}|);
+  
+  =head2 allow_bignum
+  
+      $json = $json->allow_bignum([$enable])
+      $enabled = $json->get_allow_bignum
+  
+  If C<$enable> is true (or missing), then C<decode> will convert
+  big integers Perl cannot handle as integer into L<Math::BigInt>
+  objects and convert floating numbers into L<Math::BigFloat>
+  objects. C<encode> will convert C<Math::BigInt> and C<Math::BigFloat>
+  objects into JSON numbers.
+  
+     $json->allow_nonref->allow_bignum;
+     $bigfloat = $json->decode('2.000000000000000000000000001');
+     print $json->encode($bigfloat);
+     # => 2.000000000000000000000000001
+  
+  See also L<MAPPING>.
+  
+  =head2 loose
+  
+      $json = $json->loose([$enable])
+      $enabled = $json->get_loose
+  
+  If C<$enable> is true (or missing), then C<decode> will accept
+  invalid JSON texts that contain unescaped [\x00-\x1f\x22\x5c]
+  characters. C<encode> will not be affected in anyway.
+  I<Be aware that this option makes you accept invalid JSON texts
+  as if they were valid!>. I suggest only to use this option to
+  parse application-specific files written by humans (configuration
+  files, resource files etc.)
+  
+  If C<$enable> is false (the default), then C<decode> will only accept
+  valid JSON texts.
+  
+      $json->loose->decode(qq|["abc
+                                     def"]|);
+  
+  =head2 escape_slash
+  
+      $json = $json->escape_slash([$enable])
+      $enabled = $json->get_escape_slash
+  
+  If C<$enable> is true (or missing), then C<encode> will explicitly
+  escape I<slash> (solidus; C<U+002F>) characters to reduce the risk of
+  XSS (cross site scripting) that may be caused by C<< </script> >>
+  in a JSON text, with the cost of bloating the size of JSON texts.
+  
+  This option may be useful when you embed JSON in HTML, but embedding
+  arbitrary JSON in HTML (by some HTML template toolkit or by string
+  interpolation) is risky in general. You must escape necessary
+  characters in correct order, depending on the context.
+  
+  C<decode> will not be affected in anyway.
+  
+  =head2 indent_length
+  
+      $json = $json->indent_length($number_of_spaces)
+      $length = $json->get_indent_length
+  
+  This option is only useful when you also enable C<indent> or C<pretty>.
+  
+  JSON::XS indents with three spaces when you C<encode> (if requested
+  by C<indent> or C<pretty>), and the number cannot be changed.
+  JSON::PP allows you to change/get the number of indent spaces with these
+  mutator/accessor. The default number of spaces is three (the same as
+  JSON::XS), and the acceptable range is from C<0> (no indentation;
+  it'd be better to disable indentation by C<indent(0)>) to C<15>.
+  
+  =head2 sort_by
+  
+      $json = $json->sort_by($code_ref)
+      $json = $json->sort_by($subroutine_name)
+  
+  If you just want to sort keys (names) in JSON objects when you
+  C<encode>, enable C<canonical> option (see above) that allows you to
+  sort object keys alphabetically.
+  
+  If you do need to sort non-alphabetically for whatever reasons,
+  you can give a code reference (or a subroutine name) to C<sort_by>,
+  then the argument will be passed to Perl's C<sort> built-in function.
+  
+  As the sorting is done in the JSON::PP scope, you usually need to
+  prepend C<JSON::PP::> to the subroutine name, and the special variables
+  C<$a> and C<$b> used in the subrontine used by C<sort> function.
+  
+  Example:
+  
+     my %ORDER = (id => 1, class => 2, name => 3);
+     $json->sort_by(sub {
+         ($ORDER{$JSON::PP::a} // 999) <=> ($ORDER{$JSON::PP::b} // 999)
+         or $JSON::PP::a cmp $JSON::PP::b
+     });
+     print $json->encode([
+         {name => 'CPAN', id => 1, href => 'http://cpan.org'}
+     ]);
+     # [{"id":1,"name":"CPAN","href":"http://cpan.org"}]
+  
+  Note that C<sort_by> affects all the plain hashes in the data structure.
+  If you need finer control, C<tie> necessary hashes with a module that
+  implements ordered hash (such as L<Hash::Ordered> and L<Tie::IxHash>).
+  C<canonical> and C<sort_by> don't affect the key order in C<tie>d
+  hashes.
+  
+     use Hash::Ordered;
+     tie my %hash, 'Hash::Ordered',
+         (name => 'CPAN', id => 1, href => 'http://cpan.org');
+     print $json->encode([\%hash]);
+     # [{"name":"CPAN","id":1,"href":"http://cpan.org"}] # order is kept
   
   =head1 INCREMENTAL PARSING
   
-  Most of this section are copied and modified from L<JSON::XS/INCREMENTAL PARSING>.
+  This section is also taken from JSON::XS.
   
-  In some cases, there is the need for incremental parsing of JSON texts.
-  This module does allow you to parse a JSON stream incrementally.
-  It does so by accumulating text until it has a full JSON object, which
-  it then can decode. This process is similar to using C<decode_prefix>
-  to see if a full JSON object is available, but is much more efficient
-  (and can be implemented with a minimum of method calls).
+  In some cases, there is the need for incremental parsing of JSON
+  texts. While this module always has to keep both JSON text and resulting
+  Perl data structure in memory at one time, it does allow you to parse a
+  JSON stream incrementally. It does so by accumulating text until it has
+  a full JSON object, which it then can decode. This process is similar to
+  using C<decode_prefix> to see if a full JSON object is available, but
+  is much more efficient (and can be implemented with a minimum of method
+  calls).
   
-  This module will only attempt to parse the JSON text once it is sure it
+  JSON::PP will only attempt to parse the JSON text once it is sure it
   has enough text to get a decisive result, using a very simple but
   truly incremental parser. This means that it sometimes won't stop as
-  early as the full parser, for example, it doesn't detect parentheses
-  mismatches. The only thing it guarantees is that it starts decoding as
+  early as the full parser, for example, it doesn't detect mismatched
+  parentheses. The only thing it guarantees is that it starts decoding as
   soon as a syntactically valid JSON text has been seen. This means you need
   to set resource limits (e.g. C<max_size>) to ensure the parser will stop
   parsing in the presence if syntax errors.
@@ -6674,15 +8333,16 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   
   And finally, in list context, it will try to extract as many objects
   from the stream as it can find and return them, or the empty list
-  otherwise. For this to work, there must be no separators between the JSON
-  objects or arrays, instead they must be concatenated back-to-back. If
-  an error occurs, an exception will be raised as in the scalar context
-  case. Note that in this case, any previously-parsed JSON texts will be
-  lost.
+  otherwise. For this to work, there must be no separators (other than
+  whitespace) between the JSON objects or arrays, instead they must be
+  concatenated back-to-back. If an error occurs, an exception will be
+  raised as in the scalar context case. Note that in this case, any
+  previously-parsed JSON texts will be lost.
   
-  Example: Parse some JSON arrays/objects in a given string and return them.
+  Example: Parse some JSON arrays/objects in a given string and return
+  them.
   
-      my @objs = JSON->new->incr_parse ("[5][7][1,2]");
+      my @objs = JSON::PP->new->incr_parse ("[5][7][1,2]");
   
   =head2 incr_text
   
@@ -6696,27 +8356,26 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   real world conditions). As a special exception, you can also call this
   method before having parsed anything.
   
+  That means you can only use this function to look at or manipulate text
+  before or after complete JSON objects, not while the parser is in the
+  middle of parsing a JSON object.
+  
   This function is useful in two cases: a) finding the trailing text after a
   JSON object or b) parsing multiple JSON objects separated by non-JSON text
   (such as commas).
-  
-      $json->incr_text =~ s/\s*,\s*//;
-  
-  In Perl 5.005, C<lvalue> attribute is not available.
-  You must write codes like the below:
-  
-      $string = $json->incr_text;
-      $string =~ s/\s*,\s*//;
-      $json->incr_text( $string );
   
   =head2 incr_skip
   
       $json->incr_skip
   
-  This will reset the state of the incremental parser and will remove the
-  parsed text from the input buffer. This is useful after C<incr_parse>
-  died, in which case the input buffer and incremental parser state is left
-  unchanged, to skip the text parsed so far and to reset the parse state.
+  This will reset the state of the incremental parser and will remove
+  the parsed text from the input buffer so far. This is useful after
+  C<incr_parse> died, in which case the input buffer and incremental parser
+  state is left unchanged, to skip the text parsed so far and to reset the
+  parse state.
+  
+  The difference to C<incr_reset> is that only text until the parse error
+  occurred is removed.
   
   =head2 incr_reset
   
@@ -6729,148 +8388,18 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   ignore any trailing data, which means you have to reset the parser after
   each successful decode.
   
-  See to L<JSON::XS/INCREMENTAL PARSING> for examples.
-  
-  
-  =head1 JSON::PP OWN METHODS
-  
-  =head2 allow_singlequote
-  
-      $json = $json->allow_singlequote([$enable])
-  
-  If C<$enable> is true (or missing), then C<decode> will accept
-  JSON strings quoted by single quotations that are invalid JSON
-  format.
-  
-      $json->allow_singlequote->decode({"foo":'bar'});
-      $json->allow_singlequote->decode({'foo':"bar"});
-      $json->allow_singlequote->decode({'foo':'bar'});
-  
-  As same as the C<relaxed> option, this option may be used to parse
-  application-specific files written by humans.
-  
-  
-  =head2 allow_barekey
-  
-      $json = $json->allow_barekey([$enable])
-  
-  If C<$enable> is true (or missing), then C<decode> will accept
-  bare keys of JSON object that are invalid JSON format.
-  
-  As same as the C<relaxed> option, this option may be used to parse
-  application-specific files written by humans.
-  
-      $json->allow_barekey->decode('{foo:"bar"}');
-  
-  =head2 allow_bignum
-  
-      $json = $json->allow_bignum([$enable])
-  
-  If C<$enable> is true (or missing), then C<decode> will convert
-  the big integer Perl cannot handle as integer into a L<Math::BigInt>
-  object and convert a floating number (any) into a L<Math::BigFloat>.
-  
-  On the contrary, C<encode> converts C<Math::BigInt> objects and C<Math::BigFloat>
-  objects into JSON numbers with C<allow_blessed> enabled.
-  
-     $json->allow_nonref->allow_blessed->allow_bignum;
-     $bigfloat = $json->decode('2.000000000000000000000000001');
-     print $json->encode($bigfloat);
-     # => 2.000000000000000000000000001
-  
-  See to L<JSON::XS/MAPPING> about the normal conversion of JSON number.
-  
-  =head2 loose
-  
-      $json = $json->loose([$enable])
-  
-  The unescaped [\x00-\x1f\x22\x2f\x5c] strings are invalid in JSON strings
-  and the module doesn't allow you to C<decode> to these (except for \x2f).
-  If C<$enable> is true (or missing), then C<decode>  will accept these
-  unescaped strings.
-  
-      $json->loose->decode(qq|["abc
-                                     def"]|);
-  
-  See L<JSON::XS/SECURITY CONSIDERATIONS>.
-  
-  =head2 escape_slash
-  
-      $json = $json->escape_slash([$enable])
-  
-  According to JSON Grammar, I<slash> (U+002F) is escaped. But default
-  JSON::PP (as same as JSON::XS) encodes strings without escaping slash.
-  
-  If C<$enable> is true (or missing), then C<encode> will escape slashes.
-  
-  =head2 indent_length
-  
-      $json = $json->indent_length($length)
-  
-  JSON::XS indent space length is 3 and cannot be changed.
-  JSON::PP set the indent space length with the given $length.
-  The default is 3. The acceptable range is 0 to 15.
-  
-  =head2 sort_by
-  
-      $json = $json->sort_by($function_name)
-      $json = $json->sort_by($subroutine_ref)
-  
-  If $function_name or $subroutine_ref are set, its sort routine are used
-  in encoding JSON objects.
-  
-     $js = $pc->sort_by(sub { $JSON::PP::a cmp $JSON::PP::b })->encode($obj);
-     # is($js, q|{"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9}|);
-  
-     $js = $pc->sort_by('own_sort')->encode($obj);
-     # is($js, q|{"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9}|);
-  
-     sub JSON::PP::own_sort { $JSON::PP::a cmp $JSON::PP::b }
-  
-  As the sorting routine runs in the JSON::PP scope, the given
-  subroutine name and the special variables C<$a>, C<$b> will begin
-  'JSON::PP::'.
-  
-  If $integer is set, then the effect is same as C<canonical> on.
-  
-  =head1 INTERNAL
-  
-  For developers.
-  
-  =over
-  
-  =item PP_encode_box
-  
-  Returns
-  
-          {
-              depth        => $depth,
-              indent_count => $indent_count,
-          }
-  
-  
-  =item PP_decode_box
-  
-  Returns
-  
-          {
-              text    => $text,
-              at      => $at,
-              ch      => $ch,
-              len     => $len,
-              depth   => $depth,
-              encoding      => $encoding,
-              is_valid_utf8 => $is_valid_utf8,
-          };
-  
-  =back
-  
   =head1 MAPPING
   
-  This section is copied from JSON::XS and modified to C<JSON::PP>.
-  JSON::XS and JSON::PP mapping mechanisms are almost equivalent.
+  Most of this section is also taken from JSON::XS.
   
-  See to L<JSON::XS/MAPPING>.
+  This section describes how JSON::PP maps Perl values to JSON values and
+  vice versa. These mappings are designed to "do the right thing" in most
+  circumstances automatically, preserving round-tripping characteristics
+  (what you put in comes out as something equivalent).
+  
+  For the more enlightened: note that in the following descriptions,
+  lowercase I<perl> refers to the Perl interpreter, while uppercase I<Perl>
+  refers to the abstract Perl language itself.
   
   =head2 JSON -> PERL
   
@@ -6879,7 +8408,7 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   =item object
   
   A JSON object becomes a reference to a hash in Perl. No ordering of object
-  keys is preserved (JSON does not preserver object key ordering itself).
+  keys is preserved (JSON does not preserve object key ordering itself).
   
   =item array
   
@@ -6899,7 +8428,7 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   the conversion details, but an integer may take slightly less memory and
   might represent more values exactly than floating point numbers.
   
-  If the number consists of digits only, C<JSON> will try to represent
+  If the number consists of digits only, JSON::PP will try to represent
   it as an integer value. If that fails, it will try to represent it as
   a numeric (floating point) value if that is possible without loss of
   precision. Otherwise it will preserve the number as a string value (in
@@ -6913,36 +8442,30 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   
   Note that precision is not accuracy - binary floating point values cannot
   represent most decimal fractions exactly, and when converting from and to
-  floating point, C<JSON> only guarantees precision up to but not including
+  floating point, JSON::PP only guarantees precision up to but not including
   the least significant bit.
   
-  When C<allow_bignum> is enabled, the big integers 
-  and the numeric can be optionally converted into L<Math::BigInt> and
-  L<Math::BigFloat> objects.
+  When C<allow_bignum> is enabled, big integer values and any numeric
+  values will be converted into L<Math::BigInt> and L<Math::BigFloat>
+  objects respectively, without becoming string scalars or losing
+  precision.
   
   =item true, false
   
   These JSON atoms become C<JSON::PP::true> and C<JSON::PP::false>,
   respectively. They are overloaded to act almost exactly like the numbers
   C<1> and C<0>. You can check whether a scalar is a JSON boolean by using
-  the C<JSON::is_bool> function.
-  
-     print JSON::PP::true . "\n";
-      => true
-     print JSON::PP::true + 1;
-      => 1
-  
-     ok(JSON::true eq  '1');
-     ok(JSON::true == 1);
-  
-  C<JSON> will install these missing overloading features to the backend modules.
-  
+  the C<JSON::PP::is_bool> function.
   
   =item null
   
   A JSON null atom becomes C<undef> in Perl.
   
-  C<JSON::PP::null> returns C<undef>.
+  =item shell-style comments (C<< # I<text> >>)
+  
+  As a nonstandard extension to the JSON syntax that is enabled by the
+  C<relaxed> setting, shell-style comments are allowed. They can start
+  anywhere outside strings and go till the end of the line.
   
   =back
   
@@ -6957,16 +8480,14 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   
   =item hash references
   
-  Perl hash references become JSON objects. As there is no inherent ordering
-  in hash keys (or JSON objects), they will usually be encoded in a
-  pseudo-random order that can change between runs of the same program but
-  stays generally the same within a single run of a program. C<JSON>
-  optionally sort the hash keys (determined by the I<canonical> flag), so
-  the same datastructure will serialise to the same JSON text (given same
-  settings and version of JSON::XS), but this incurs a runtime overhead
-  and is only rarely useful, e.g. when you want to compare some JSON text
-  against another for equality.
-  
+  Perl hash references become JSON objects. As there is no inherent
+  ordering in hash keys (or JSON objects), they will usually be encoded
+  in a pseudo-random order. JSON::PP can optionally sort the hash keys
+  (determined by the I<canonical> flag and/or I<sort_by> property), so
+  the same data structure will serialise to the same JSON text (given
+  same settings and version of JSON::PP), but this incurs a runtime
+  overhead and is only rarely useful, e.g. when you want to compare some
+  JSON text against another for equality.
   
   =item array references
   
@@ -6977,31 +8498,30 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   Other unblessed references are generally not allowed and will cause an
   exception to be thrown, except for references to the integers C<0> and
   C<1>, which get turned into C<false> and C<true> atoms in JSON. You can
-  also use C<JSON::false> and C<JSON::true> to improve readability.
+  also use C<JSON::PP::false> and C<JSON::PP::true> to improve
+  readability.
   
-     to_json [\0,JSON::PP::true]      # yields [false,true]
+     to_json [\0, JSON::PP::true]      # yields [false,true]
   
-  =item JSON::PP::true, JSON::PP::false, JSON::PP::null
+  =item JSON::PP::true, JSON::PP::false
   
   These special values become JSON true and JSON false values,
   respectively. You can also use C<\1> and C<\0> directly if you want.
   
-  JSON::PP::null returns C<undef>.
+  =item JSON::PP::null
+  
+  This special value becomes JSON null.
   
   =item blessed objects
   
-  Blessed objects are not directly representable in JSON. See the
-  C<allow_blessed> and C<convert_blessed> methods on various options on
-  how to deal with this: basically, you can choose between throwing an
-  exception, encoding the reference as if it weren't blessed, or provide
-  your own serialiser method.
-  
-  See to L<convert_blessed>.
+  Blessed objects are not directly representable in JSON, but C<JSON::PP>
+  allows various ways of handling objects. See L<OBJECT SERIALISATION>,
+  below, for details.
   
   =item simple scalars
   
   Simple Perl scalars (any scalar that is not a reference) are the most
-  difficult objects to encode: JSON::XS and JSON::PP will encode undefined scalars as
+  difficult objects to encode: JSON::PP will encode undefined scalars as
   JSON C<null> values, scalars that have last been used in a string context
   before encoding as JSON strings, and anything else as number value:
   
@@ -7023,6 +8543,7 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
      "$x";        # stringified
      $x .= "";    # another, more awkward way to stringify
      print $x;    # perl does it for you, too, quite often
+                  # (but for older perls)
   
   You can force the type to be a number by numifying it:
   
@@ -7039,94 +8560,171 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   infinities or NaN's - these cannot be represented in JSON, and it is an
   error to pass those in.
   
-  =item Big Number
-  
-  When C<allow_bignum> is enabled, 
-  C<encode> converts C<Math::BigInt> objects and C<Math::BigFloat>
-  objects into JSON numbers.
-  
-  
-  =back
-  
-  =head1 UNICODE HANDLING ON PERLS
-  
-  If you do not know about Unicode on Perl well,
-  please check L<JSON::XS/A FEW NOTES ON UNICODE AND PERL>.
-  
-  =head2 Perl 5.8 and later
-  
-  Perl can handle Unicode and the JSON::PP de/encode methods also work properly.
-  
-      $json->allow_nonref->encode(chr hex 3042);
-      $json->allow_nonref->encode(chr hex 12345);
-  
-  Returns C<"\u3042"> and C<"\ud808\udf45"> respectively.
-  
-      $json->allow_nonref->decode('"\u3042"');
-      $json->allow_nonref->decode('"\ud808\udf45"');
-  
-  Returns UTF-8 encoded strings with UTF8 flag, regarded as C<U+3042> and C<U+12345>.
-  
-  Note that the versions from Perl 5.8.0 to 5.8.2, Perl built-in C<join> was broken,
-  so JSON::PP wraps the C<join> with a subroutine. Thus JSON::PP works slow in the versions.
-  
-  
-  =head2 Perl 5.6
-  
-  Perl can handle Unicode and the JSON::PP de/encode methods also work.
-  
-  =head2 Perl 5.005
-  
-  Perl 5.005 is a byte semantics world -- all strings are sequences of bytes.
-  That means the unicode handling is not available.
-  
-  In encoding,
-  
-      $json->allow_nonref->encode(chr hex 3042);  # hex 3042 is 12354.
-      $json->allow_nonref->encode(chr hex 12345); # hex 12345 is 74565.
-  
-  Returns C<B> and C<E>, as C<chr> takes a value more than 255, it treats
-  as C<$value % 256>, so the above codes are equivalent to :
-  
-      $json->allow_nonref->encode(chr 66);
-      $json->allow_nonref->encode(chr 69);
-  
-  In decoding,
-  
-      $json->decode('"\u00e3\u0081\u0082"');
-  
-  The returned is a byte sequence C<0xE3 0x81 0x82> for UTF-8 encoded
-  Japanese character (C<HIRAGANA LETTER A>).
-  And if it is represented in Unicode code point, C<U+3042>.
-  
-  Next, 
-  
-      $json->decode('"\u3042"');
-  
-  We ordinary expect the returned value is a Unicode character C<U+3042>.
-  But here is 5.005 world. This is C<0xE3 0x81 0x82>.
-  
-      $json->decode('"\ud808\udf45"');
-  
-  This is not a character C<U+12345> but bytes - C<0xf0 0x92 0x8d 0x85>.
-  
-  
-  =head1 TODO
-  
-  =over
-  
-  =item speed
-  
-  =item memory saving
+  JSON::PP (and JSON::XS) trusts what you pass to C<encode> method
+  (or C<encode_json> function) is a clean, validated data structure with
+  values that can be represented as valid JSON values only, because it's
+  not from an external data source (as opposed to JSON texts you pass to
+  C<decode> or C<decode_json>, which JSON::PP considers tainted and
+  doesn't trust). As JSON::PP doesn't know exactly what you and consumers
+  of your JSON texts want the unexpected values to be (you may want to
+  convert them into null, or to stringify them with or without
+  normalisation (string representation of infinities/NaN may vary
+  depending on platforms), or to croak without conversion), you're advised
+  to do what you and your consumers need before you encode, and also not
+  to numify values that may start with values that look like a number
+  (including infinities/NaN), without validating.
   
   =back
   
+  =head2 OBJECT SERIALISATION
+  
+  As for Perl objects, JSON::PP only supports a pure JSON representation (without the ability to deserialise the object automatically again).
+  
+  =head3 SERIALISATION
+  
+  What happens when C<JSON::PP> encounters a Perl object depends on the
+  C<allow_blessed>, C<convert_blessed> and C<allow_bignum> settings, which are
+  used in this order:
+  
+  =over 4
+  
+  =item 1. C<convert_blessed> is enabled and the object has a C<TO_JSON> method.
+  
+  In this case, the C<TO_JSON> method of the object is invoked in scalar
+  context. It must return a single scalar that can be directly encoded into
+  JSON. This scalar replaces the object in the JSON text.
+  
+  For example, the following C<TO_JSON> method will convert all L<URI>
+  objects to JSON strings when serialised. The fact that these values
+  originally were L<URI> objects is lost.
+  
+     sub URI::TO_JSON {
+        my ($uri) = @_;
+        $uri->as_string
+     }
+  
+  =item 2. C<allow_bignum> is enabled and the object is a C<Math::BigInt> or C<Math::BigFloat>.
+  
+  The object will be serialised as a JSON number value.
+  
+  =item 3. C<allow_blessed> is enabled.
+  
+  The object will be serialised as a JSON null value.
+  
+  =item 4. none of the above
+  
+  If none of the settings are enabled or the respective methods are missing,
+  C<JSON::PP> throws an exception.
+  
+  =back
+  
+  =head1 ENCODING/CODESET FLAG NOTES
+  
+  This section is taken from JSON::XS.
+  
+  The interested reader might have seen a number of flags that signify
+  encodings or codesets - C<utf8>, C<latin1> and C<ascii>. There seems to be
+  some confusion on what these do, so here is a short comparison:
+  
+  C<utf8> controls whether the JSON text created by C<encode> (and expected
+  by C<decode>) is UTF-8 encoded or not, while C<latin1> and C<ascii> only
+  control whether C<encode> escapes character values outside their respective
+  codeset range. Neither of these flags conflict with each other, although
+  some combinations make less sense than others.
+  
+  Care has been taken to make all flags symmetrical with respect to
+  C<encode> and C<decode>, that is, texts encoded with any combination of
+  these flag values will be correctly decoded when the same flags are used
+  - in general, if you use different flag settings while encoding vs. when
+  decoding you likely have a bug somewhere.
+  
+  Below comes a verbose discussion of these flags. Note that a "codeset" is
+  simply an abstract set of character-codepoint pairs, while an encoding
+  takes those codepoint numbers and I<encodes> them, in our case into
+  octets. Unicode is (among other things) a codeset, UTF-8 is an encoding,
+  and ISO-8859-1 (= latin 1) and ASCII are both codesets I<and> encodings at
+  the same time, which can be confusing.
+  
+  =over 4
+  
+  =item C<utf8> flag disabled
+  
+  When C<utf8> is disabled (the default), then C<encode>/C<decode> generate
+  and expect Unicode strings, that is, characters with high ordinal Unicode
+  values (> 255) will be encoded as such characters, and likewise such
+  characters are decoded as-is, no changes to them will be done, except
+  "(re-)interpreting" them as Unicode codepoints or Unicode characters,
+  respectively (to Perl, these are the same thing in strings unless you do
+  funny/weird/dumb stuff).
+  
+  This is useful when you want to do the encoding yourself (e.g. when you
+  want to have UTF-16 encoded JSON texts) or when some other layer does
+  the encoding for you (for example, when printing to a terminal using a
+  filehandle that transparently encodes to UTF-8 you certainly do NOT want
+  to UTF-8 encode your data first and have Perl encode it another time).
+  
+  =item C<utf8> flag enabled
+  
+  If the C<utf8>-flag is enabled, C<encode>/C<decode> will encode all
+  characters using the corresponding UTF-8 multi-byte sequence, and will
+  expect your input strings to be encoded as UTF-8, that is, no "character"
+  of the input string must have any value > 255, as UTF-8 does not allow
+  that.
+  
+  The C<utf8> flag therefore switches between two modes: disabled means you
+  will get a Unicode string in Perl, enabled means you get an UTF-8 encoded
+  octet/binary string in Perl.
+  
+  =item C<latin1> or C<ascii> flags enabled
+  
+  With C<latin1> (or C<ascii>) enabled, C<encode> will escape characters
+  with ordinal values > 255 (> 127 with C<ascii>) and encode the remaining
+  characters as specified by the C<utf8> flag.
+  
+  If C<utf8> is disabled, then the result is also correctly encoded in those
+  character sets (as both are proper subsets of Unicode, meaning that a
+  Unicode string with all character values < 256 is the same thing as a
+  ISO-8859-1 string, and a Unicode string with all character values < 128 is
+  the same thing as an ASCII string in Perl).
+  
+  If C<utf8> is enabled, you still get a correct UTF-8-encoded string,
+  regardless of these flags, just some more characters will be escaped using
+  C<\uXXXX> then before.
+  
+  Note that ISO-8859-1-I<encoded> strings are not compatible with UTF-8
+  encoding, while ASCII-encoded strings are. That is because the ISO-8859-1
+  encoding is NOT a subset of UTF-8 (despite the ISO-8859-1 I<codeset> being
+  a subset of Unicode), while ASCII is.
+  
+  Surprisingly, C<decode> will ignore these flags and so treat all input
+  values as governed by the C<utf8> flag. If it is disabled, this allows you
+  to decode ISO-8859-1- and ASCII-encoded strings, as both strict subsets of
+  Unicode. If it is enabled, you can correctly decode UTF-8 encoded strings.
+  
+  So neither C<latin1> nor C<ascii> are incompatible with the C<utf8> flag -
+  they only govern when the JSON output engine escapes a character or not.
+  
+  The main use for C<latin1> is to relatively efficiently store binary data
+  as JSON, at the expense of breaking compatibility with most JSON decoders.
+  
+  The main use for C<ascii> is to force the output to not contain characters
+  with values > 127, which means you can interpret the resulting string
+  as UTF-8, ISO-8859-1, ASCII, KOI8-R or most about any character set and
+  8-bit-encoding, and still get the same data structure back. This is useful
+  when your channel for JSON transfer is not 8-bit clean or the encoding
+  might be mangled in between (e.g. in mail), and works because ASCII is a
+  proper subset of most 8-bit and multibyte encodings in use in the world.
+  
+  =back
   
   =head1 SEE ALSO
   
-  Most of the document are copied and modified from JSON::XS doc.
+  The F<json_pp> command line utility for quick experiments.
   
-  L<JSON::XS>
+  L<JSON::XS>, L<Cpanel::JSON::XS>, and L<JSON::Tiny> for faster alternatives.
+  L<JSON> and L<JSON::MaybeXS> for easy migration.
+  
+  L<JSON::PP::Compat5005> and L<JSON::PP::Compat5006> for older perl users.
   
   RFC4627 (L<http://www.ietf.org/rfc/rfc4627.txt>)
   
@@ -7146,6 +8744,22 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
 JSON_PP
 
 $fatpacked{"JSON/PP/Boolean.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP_BOOLEAN';
+  package JSON::PP::Boolean;
+  
+  use strict;
+  use overload (
+      "0+"     => sub { ${$_[0]} },
+      "++"     => sub { $_[0] = ${$_[0]} + 1 },
+      "--"     => sub { $_[0] = ${$_[0]} - 1 },
+      fallback => 1,
+  );
+  
+  $JSON::PP::Boolean::VERSION = '2.94';
+  
+  1;
+  
+  __END__
+  
   =head1 NAME
   
   JSON::PP::Boolean - dummy module providing JSON::PP::Boolean
@@ -7158,13 +8772,6 @@ $fatpacked{"JSON/PP/Boolean.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
   
   This module exists only to provide overload resolution for Storable and similar modules. See
   L<JSON::PP> for more info about this class.
-  
-  =cut
-  
-  use JSON::PP ();
-  use strict;
-  
-  1;
   
   =head1 AUTHOR
   
@@ -9002,9 +10609,21 @@ $fatpacked{"Module/CoreList.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
   use strict;
   use vars qw/$VERSION %released %version %families %upstream
   	    %bug_tracker %deprecated %delta/;
-  use Module::CoreList::TieHashDelta;
   use version;
-  $VERSION = '5.20160520';
+  $VERSION = '5.20170530';
+  
+  sub _undelta {
+      my ($delta) = @_;
+      my (%expanded, $delta_from, $base, $changed, $removed);
+      for my $v (sort keys %$delta) {
+          ($delta_from, $changed, $removed) = @{$delta->{$v}}{qw( delta_from changed removed )};
+          $base = $delta_from ? $expanded{$delta_from} : {};
+          my %full = ( %$base, %{$changed || {}} );
+          delete @full{ keys %$removed };
+          $expanded{$v} = \%full;
+      }
+      return %expanded;
+  }
   
   sub _released_order {   # Sort helper, to make '?' sort after everything else
       (substr($released{$a}, 0, 1) eq "?")
@@ -9295,6 +10914,20 @@ $fatpacked{"Module/CoreList.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
       5.024000 => '2016-05-09',
       5.025000 => '2016-05-09',
       5.025001 => '2016-05-20',
+      5.025002 => '2016-06-20',
+      5.025003 => '2016-07-20',
+      5.025004 => '2016-08-20',
+      5.025005 => '2016-09-20',
+      5.025006 => '2016-10-20',
+      5.025007 => '2016-11-20',
+      5.025008 => '2016-12-20',
+      5.022003 => '2017-01-14',
+      5.024001 => '2017-01-14',
+      5.025009 => '2017-01-20',
+      5.025010 => '2017-02-20',
+      5.025011 => '2017-03-20',
+      5.025012 => '2017-04-20',
+      5.026000 => '????-??-??',
     );
   
   for my $version ( sort { $a <=> $b } keys %released ) {
@@ -21535,6 +23168,1553 @@ $fatpacked{"Module/CoreList.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
           removed => {
           }
       },
+      5.025002 => {
+          delta_from => 5.025001,
+          changed => {
+              'App::Cpan'             => '1.64',
+              'B::Op_private'         => '5.025002',
+              'CPAN'                  => '2.14',
+              'CPAN::Distribution'    => '2.12',
+              'CPAN::FTP'             => '5.5007',
+              'CPAN::FirstTime'       => '5.5309',
+              'CPAN::HandleConfig'    => '5.5007',
+              'CPAN::Index'           => '2.12',
+              'CPAN::Mirrors'         => '2.12',
+              'CPAN::Plugin'          => '0.96',
+              'CPAN::Shell'           => '5.5006',
+              'Config'                => '5.025002',
+              'Cwd'                   => '3.64',
+              'Devel::Peek'           => '1.24',
+              'DynaLoader'            => '1.39',
+              'ExtUtils::Command'     => '7.18',
+              'ExtUtils::Command::MM' => '7.18',
+              'ExtUtils::Liblist'     => '7.18',
+              'ExtUtils::Liblist::Kid'=> '7.18',
+              'ExtUtils::MM'          => '7.18',
+              'ExtUtils::MM_AIX'      => '7.18',
+              'ExtUtils::MM_Any'      => '7.18',
+              'ExtUtils::MM_BeOS'     => '7.18',
+              'ExtUtils::MM_Cygwin'   => '7.18',
+              'ExtUtils::MM_DOS'      => '7.18',
+              'ExtUtils::MM_Darwin'   => '7.18',
+              'ExtUtils::MM_MacOS'    => '7.18',
+              'ExtUtils::MM_NW5'      => '7.18',
+              'ExtUtils::MM_OS2'      => '7.18',
+              'ExtUtils::MM_QNX'      => '7.18',
+              'ExtUtils::MM_UWIN'     => '7.18',
+              'ExtUtils::MM_Unix'     => '7.18',
+              'ExtUtils::MM_VMS'      => '7.18',
+              'ExtUtils::MM_VOS'      => '7.18',
+              'ExtUtils::MM_Win32'    => '7.18',
+              'ExtUtils::MM_Win95'    => '7.18',
+              'ExtUtils::MY'          => '7.18',
+              'ExtUtils::MakeMaker'   => '7.18',
+              'ExtUtils::MakeMaker::Config'=> '7.18',
+              'ExtUtils::MakeMaker::Locale'=> '7.18',
+              'ExtUtils::MakeMaker::version'=> '7.18',
+              'ExtUtils::MakeMaker::version::regex'=> '7.18',
+              'ExtUtils::Miniperl'    => '1.06',
+              'ExtUtils::Mkbootstrap' => '7.18',
+              'ExtUtils::Mksymlists'  => '7.18',
+              'ExtUtils::ParseXS'     => '3.32',
+              'ExtUtils::ParseXS::Constants'=> '3.32',
+              'ExtUtils::ParseXS::CountLines'=> '3.32',
+              'ExtUtils::ParseXS::Eval'=> '3.32',
+              'ExtUtils::ParseXS::Utilities'=> '3.32',
+              'ExtUtils::Typemaps'    => '3.32',
+              'ExtUtils::Typemaps::Cmd'=> '3.32',
+              'ExtUtils::Typemaps::InputMap'=> '3.32',
+              'ExtUtils::Typemaps::OutputMap'=> '3.32',
+              'ExtUtils::Typemaps::Type'=> '3.32',
+              'ExtUtils::testlib'     => '7.18',
+              'File::Copy'            => '2.32',
+              'File::Glob'            => '1.27',
+              'File::Spec'            => '3.64',
+              'File::Spec::Cygwin'    => '3.64',
+              'File::Spec::Epoc'      => '3.64',
+              'File::Spec::Functions' => '3.64',
+              'File::Spec::Mac'       => '3.64',
+              'File::Spec::OS2'       => '3.64',
+              'File::Spec::Unix'      => '3.64',
+              'File::Spec::VMS'       => '3.64',
+              'File::Spec::Win32'     => '3.64',
+              'FileHandle'            => '2.03',
+              'Getopt::Long'          => '2.49',
+              'HTTP::Tiny'            => '0.058',
+              'JSON::PP'              => '2.27400',
+              'Locale::Codes'         => '3.39',
+              'Locale::Codes::Constants'=> '3.39',
+              'Locale::Codes::Country'=> '3.39',
+              'Locale::Codes::Country_Codes'=> '3.39',
+              'Locale::Codes::Country_Retired'=> '3.39',
+              'Locale::Codes::Currency'=> '3.39',
+              'Locale::Codes::Currency_Codes'=> '3.39',
+              'Locale::Codes::Currency_Retired'=> '3.39',
+              'Locale::Codes::LangExt'=> '3.39',
+              'Locale::Codes::LangExt_Codes'=> '3.39',
+              'Locale::Codes::LangExt_Retired'=> '3.39',
+              'Locale::Codes::LangFam'=> '3.39',
+              'Locale::Codes::LangFam_Codes'=> '3.39',
+              'Locale::Codes::LangFam_Retired'=> '3.39',
+              'Locale::Codes::LangVar'=> '3.39',
+              'Locale::Codes::LangVar_Codes'=> '3.39',
+              'Locale::Codes::LangVar_Retired'=> '3.39',
+              'Locale::Codes::Language'=> '3.39',
+              'Locale::Codes::Language_Codes'=> '3.39',
+              'Locale::Codes::Language_Retired'=> '3.39',
+              'Locale::Codes::Script' => '3.39',
+              'Locale::Codes::Script_Codes'=> '3.39',
+              'Locale::Codes::Script_Retired'=> '3.39',
+              'Locale::Country'       => '3.39',
+              'Locale::Currency'      => '3.39',
+              'Locale::Language'      => '3.39',
+              'Locale::Script'        => '3.39',
+              'Module::CoreList'      => '5.20160620',
+              'Module::CoreList::TieHashDelta'=> '5.20160620',
+              'Module::CoreList::Utils'=> '5.20160620',
+              'Opcode'                => '1.35',
+              'POSIX'                 => '1.70',
+              'Pod::Checker'          => '1.73',
+              'Pod::Functions'        => '1.11',
+              'Pod::Functions::Functions'=> '1.11',
+              'Pod::Usage'            => '1.69',
+              'Test2'                 => '1.302026',
+              'Test2::API'            => '1.302026',
+              'Test2::API::Breakage'  => '1.302026',
+              'Test2::API::Context'   => '1.302026',
+              'Test2::API::Instance'  => '1.302026',
+              'Test2::API::Stack'     => '1.302026',
+              'Test2::Event'          => '1.302026',
+              'Test2::Event::Bail'    => '1.302026',
+              'Test2::Event::Diag'    => '1.302026',
+              'Test2::Event::Exception'=> '1.302026',
+              'Test2::Event::Generic' => '1.302026',
+              'Test2::Event::Note'    => '1.302026',
+              'Test2::Event::Ok'      => '1.302026',
+              'Test2::Event::Plan'    => '1.302026',
+              'Test2::Event::Skip'    => '1.302026',
+              'Test2::Event::Subtest' => '1.302026',
+              'Test2::Event::Waiting' => '1.302026',
+              'Test2::Formatter'      => '1.302026',
+              'Test2::Formatter::TAP' => '1.302026',
+              'Test2::Hub'            => '1.302026',
+              'Test2::Hub::Interceptor'=> '1.302026',
+              'Test2::Hub::Interceptor::Terminator'=> '1.302026',
+              'Test2::Hub::Subtest'   => '1.302026',
+              'Test2::IPC'            => '1.302026',
+              'Test2::IPC::Driver'    => '1.302026',
+              'Test2::IPC::Driver::Files'=> '1.302026',
+              'Test2::Util'           => '1.302026',
+              'Test2::Util::ExternalMeta'=> '1.302026',
+              'Test2::Util::HashBase' => '1.302026',
+              'Test2::Util::Trace'    => '1.302026',
+              'Test::Builder'         => '1.302026',
+              'Test::Builder::Formatter'=> '1.302026',
+              'Test::Builder::Module' => '1.302026',
+              'Test::Builder::Tester' => '1.302026',
+              'Test::Builder::Tester::Color'=> '1.302026',
+              'Test::Builder::TodoDiag'=> '1.302026',
+              'Test::More'            => '1.302026',
+              'Test::Simple'          => '1.302026',
+              'Test::Tester'          => '1.302026',
+              'Test::Tester::Capture' => '1.302026',
+              'Test::Tester::CaptureRunner'=> '1.302026',
+              'Test::Tester::Delegate'=> '1.302026',
+              'Test::use::ok'         => '1.302026',
+              'Thread::Queue'         => '3.11',
+              'Time::HiRes'           => '1.9734',
+              'Unicode::UCD'          => '0.65',
+              'VMS::DCLsym'           => '1.07',
+              'XS::APItest'           => '0.82',
+              'diagnostics'           => '1.35',
+              'feature'               => '1.44',
+              'ok'                    => '1.302026',
+              'threads'               => '2.09',
+          },
+          removed => {
+          }
+      },
+      5.025003 => {
+          delta_from => 5.025002,
+          changed => {
+              'B::Op_private'         => '5.025003',
+              'Config'                => '5.025003',
+              'Data::Dumper'          => '2.161',
+              'Devel::PPPort'         => '3.35',
+              'Encode'                => '2.84',
+              'Encode::MIME::Header'  => '2.23',
+              'Encode::MIME::Header::ISO_2022_JP'=> '1.07',
+              'ExtUtils::ParseXS'     => '3.33',
+              'ExtUtils::ParseXS::Constants'=> '3.33',
+              'ExtUtils::ParseXS::CountLines'=> '3.33',
+              'ExtUtils::ParseXS::Eval'=> '3.33',
+              'ExtUtils::ParseXS::Utilities'=> '3.33',
+              'ExtUtils::Typemaps'    => '3.33',
+              'ExtUtils::Typemaps::Cmd'=> '3.33',
+              'ExtUtils::Typemaps::InputMap'=> '3.33',
+              'ExtUtils::Typemaps::OutputMap'=> '3.33',
+              'ExtUtils::Typemaps::Type'=> '3.33',
+              'Hash::Util'            => '0.20',
+              'Math::BigFloat'        => '1.999726',
+              'Math::BigFloat::Trace' => '0.43',
+              'Math::BigInt'          => '1.999726',
+              'Math::BigInt::Calc'    => '1.999726',
+              'Math::BigInt::CalcEmu' => '1.999726',
+              'Math::BigInt::FastCalc'=> '0.42',
+              'Math::BigInt::Trace'   => '0.43',
+              'Math::BigRat'          => '0.260804',
+              'Module::CoreList'      => '5.20160720',
+              'Module::CoreList::TieHashDelta'=> '5.20160720',
+              'Module::CoreList::Utils'=> '5.20160720',
+              'Net::Cmd'              => '3.09',
+              'Net::Config'           => '3.09',
+              'Net::Domain'           => '3.09',
+              'Net::FTP'              => '3.09',
+              'Net::FTP::A'           => '3.09',
+              'Net::FTP::E'           => '3.09',
+              'Net::FTP::I'           => '3.09',
+              'Net::FTP::L'           => '3.09',
+              'Net::FTP::dataconn'    => '3.09',
+              'Net::NNTP'             => '3.09',
+              'Net::Netrc'            => '3.09',
+              'Net::POP3'             => '3.09',
+              'Net::SMTP'             => '3.09',
+              'Net::Time'             => '3.09',
+              'Parse::CPAN::Meta'     => '1.4422',
+              'Perl::OSType'          => '1.010',
+              'Test2'                 => '1.302045',
+              'Test2::API'            => '1.302045',
+              'Test2::API::Breakage'  => '1.302045',
+              'Test2::API::Context'   => '1.302045',
+              'Test2::API::Instance'  => '1.302045',
+              'Test2::API::Stack'     => '1.302045',
+              'Test2::Event'          => '1.302045',
+              'Test2::Event::Bail'    => '1.302045',
+              'Test2::Event::Diag'    => '1.302045',
+              'Test2::Event::Exception'=> '1.302045',
+              'Test2::Event::Generic' => '1.302045',
+              'Test2::Event::Info'    => '1.302045',
+              'Test2::Event::Note'    => '1.302045',
+              'Test2::Event::Ok'      => '1.302045',
+              'Test2::Event::Plan'    => '1.302045',
+              'Test2::Event::Skip'    => '1.302045',
+              'Test2::Event::Subtest' => '1.302045',
+              'Test2::Event::Waiting' => '1.302045',
+              'Test2::Formatter'      => '1.302045',
+              'Test2::Formatter::TAP' => '1.302045',
+              'Test2::Hub'            => '1.302045',
+              'Test2::Hub::Interceptor'=> '1.302045',
+              'Test2::Hub::Interceptor::Terminator'=> '1.302045',
+              'Test2::Hub::Subtest'   => '1.302045',
+              'Test2::IPC'            => '1.302045',
+              'Test2::IPC::Driver'    => '1.302045',
+              'Test2::IPC::Driver::Files'=> '1.302045',
+              'Test2::Util'           => '1.302045',
+              'Test2::Util::ExternalMeta'=> '1.302045',
+              'Test2::Util::HashBase' => '1.302045',
+              'Test2::Util::Trace'    => '1.302045',
+              'Test::Builder'         => '1.302045',
+              'Test::Builder::Formatter'=> '1.302045',
+              'Test::Builder::Module' => '1.302045',
+              'Test::Builder::Tester' => '1.302045',
+              'Test::Builder::Tester::Color'=> '1.302045',
+              'Test::Builder::TodoDiag'=> '1.302045',
+              'Test::More'            => '1.302045',
+              'Test::Simple'          => '1.302045',
+              'Test::Tester'          => '1.302045',
+              'Test::Tester::Capture' => '1.302045',
+              'Test::Tester::CaptureRunner'=> '1.302045',
+              'Test::Tester::Delegate'=> '1.302045',
+              'Test::use::ok'         => '1.302045',
+              'Time::HiRes'           => '1.9739',
+              'Unicode'               => '9.0.0',
+              'Unicode::UCD'          => '0.66',
+              'XSLoader'              => '0.22',
+              'bigint'                => '0.43',
+              'bignum'                => '0.43',
+              'bigrat'                => '0.43',
+              'encoding'              => '2.17_01',
+              'encoding::warnings'    => '0.13',
+              'feature'               => '1.45',
+              'ok'                    => '1.302045',
+              'version'               => '0.9917',
+              'version::regex'        => '0.9917',
+              'warnings'              => '1.37',
+          },
+          removed => {
+          }
+      },
+      5.025004 => {
+          delta_from => 5.025003,
+          changed => {
+              'App::Cpan'             => '1.64_01',
+              'App::Prove'            => '3.36_01',
+              'App::Prove::State'     => '3.36_01',
+              'App::Prove::State::Result'=> '3.36_01',
+              'App::Prove::State::Result::Test'=> '3.36_01',
+              'Archive::Tar'          => '2.10',
+              'Archive::Tar::Constant'=> '2.10',
+              'Archive::Tar::File'    => '2.10',
+              'B'                     => '1.63',
+              'B::Concise'            => '0.998',
+              'B::Deparse'            => '1.38',
+              'B::Op_private'         => '5.025004',
+              'CPAN'                  => '2.14_01',
+              'CPAN::Meta'            => '2.150010',
+              'CPAN::Meta::Converter' => '2.150010',
+              'CPAN::Meta::Feature'   => '2.150010',
+              'CPAN::Meta::History'   => '2.150010',
+              'CPAN::Meta::Merge'     => '2.150010',
+              'CPAN::Meta::Prereqs'   => '2.150010',
+              'CPAN::Meta::Spec'      => '2.150010',
+              'CPAN::Meta::Validator' => '2.150010',
+              'Carp'                  => '1.42',
+              'Carp::Heavy'           => '1.42',
+              'Compress::Zlib'        => '2.069_01',
+              'Config'                => '5.025004',
+              'Config::Perl::V'       => '0.27',
+              'Cwd'                   => '3.65',
+              'Digest'                => '1.17_01',
+              'Digest::SHA'           => '5.96',
+              'Encode'                => '2.86',
+              'Errno'                 => '1.26',
+              'ExtUtils::Command'     => '7.24',
+              'ExtUtils::Command::MM' => '7.24',
+              'ExtUtils::Liblist'     => '7.24',
+              'ExtUtils::Liblist::Kid'=> '7.24',
+              'ExtUtils::MM'          => '7.24',
+              'ExtUtils::MM_AIX'      => '7.24',
+              'ExtUtils::MM_Any'      => '7.24',
+              'ExtUtils::MM_BeOS'     => '7.24',
+              'ExtUtils::MM_Cygwin'   => '7.24',
+              'ExtUtils::MM_DOS'      => '7.24',
+              'ExtUtils::MM_Darwin'   => '7.24',
+              'ExtUtils::MM_MacOS'    => '7.24',
+              'ExtUtils::MM_NW5'      => '7.24',
+              'ExtUtils::MM_OS2'      => '7.24',
+              'ExtUtils::MM_QNX'      => '7.24',
+              'ExtUtils::MM_UWIN'     => '7.24',
+              'ExtUtils::MM_Unix'     => '7.24',
+              'ExtUtils::MM_VMS'      => '7.24',
+              'ExtUtils::MM_VOS'      => '7.24',
+              'ExtUtils::MM_Win32'    => '7.24',
+              'ExtUtils::MM_Win95'    => '7.24',
+              'ExtUtils::MY'          => '7.24',
+              'ExtUtils::MakeMaker'   => '7.24',
+              'ExtUtils::MakeMaker::Config'=> '7.24',
+              'ExtUtils::MakeMaker::Locale'=> '7.24',
+              'ExtUtils::MakeMaker::version'=> '7.24',
+              'ExtUtils::MakeMaker::version::regex'=> '7.24',
+              'ExtUtils::Mkbootstrap' => '7.24',
+              'ExtUtils::Mksymlists'  => '7.24',
+              'ExtUtils::testlib'     => '7.24',
+              'File::Fetch'           => '0.52',
+              'File::Spec'            => '3.65',
+              'File::Spec::AmigaOS'   => '3.65',
+              'File::Spec::Cygwin'    => '3.65',
+              'File::Spec::Epoc'      => '3.65',
+              'File::Spec::Functions' => '3.65',
+              'File::Spec::Mac'       => '3.65',
+              'File::Spec::OS2'       => '3.65',
+              'File::Spec::Unix'      => '3.65',
+              'File::Spec::VMS'       => '3.65',
+              'File::Spec::Win32'     => '3.65',
+              'HTTP::Tiny'            => '0.064',
+              'Hash::Util'            => '0.21',
+              'I18N::LangTags'        => '0.41',
+              'I18N::LangTags::Detect'=> '1.06',
+              'IO'                    => '1.37',
+              'IO::Compress::Adapter::Bzip2'=> '2.069_01',
+              'IO::Compress::Adapter::Deflate'=> '2.069_01',
+              'IO::Compress::Adapter::Identity'=> '2.069_01',
+              'IO::Compress::Base'    => '2.069_01',
+              'IO::Compress::Base::Common'=> '2.069_01',
+              'IO::Compress::Bzip2'   => '2.069_01',
+              'IO::Compress::Deflate' => '2.069_01',
+              'IO::Compress::Gzip'    => '2.069_01',
+              'IO::Compress::Gzip::Constants'=> '2.069_01',
+              'IO::Compress::RawDeflate'=> '2.069_01',
+              'IO::Compress::Zip'     => '2.069_01',
+              'IO::Compress::Zip::Constants'=> '2.069_01',
+              'IO::Compress::Zlib::Constants'=> '2.069_01',
+              'IO::Compress::Zlib::Extra'=> '2.069_01',
+              'IO::Socket::IP'        => '0.38',
+              'IO::Uncompress::Adapter::Bunzip2'=> '2.069_01',
+              'IO::Uncompress::Adapter::Identity'=> '2.069_01',
+              'IO::Uncompress::Adapter::Inflate'=> '2.069_01',
+              'IO::Uncompress::AnyInflate'=> '2.069_01',
+              'IO::Uncompress::AnyUncompress'=> '2.069_01',
+              'IO::Uncompress::Base'  => '2.069_01',
+              'IO::Uncompress::Bunzip2'=> '2.069_01',
+              'IO::Uncompress::Gunzip'=> '2.069_01',
+              'IO::Uncompress::Inflate'=> '2.069_01',
+              'IO::Uncompress::RawInflate'=> '2.069_01',
+              'IO::Uncompress::Unzip' => '2.069_01',
+              'IPC::Cmd'              => '0.96',
+              'JSON::PP'              => '2.27400_01',
+              'Locale::Maketext'      => '1.28',
+              'Locale::Maketext::Simple'=> '0.21_01',
+              'Math::BigFloat::Trace' => '0.43_01',
+              'Math::BigInt::Trace'   => '0.43_01',
+              'Memoize'               => '1.03_01',
+              'Module::CoreList'      => '5.20160820',
+              'Module::CoreList::TieHashDelta'=> '5.20160820',
+              'Module::CoreList::Utils'=> '5.20160820',
+              'Module::Load::Conditional'=> '0.68',
+              'Module::Metadata'      => '1.000033',
+              'NEXT'                  => '0.67',
+              'Net::Cmd'              => '3.10',
+              'Net::Config'           => '3.10',
+              'Net::Domain'           => '3.10',
+              'Net::FTP'              => '3.10',
+              'Net::FTP::A'           => '3.10',
+              'Net::FTP::E'           => '3.10',
+              'Net::FTP::I'           => '3.10',
+              'Net::FTP::L'           => '3.10',
+              'Net::FTP::dataconn'    => '3.10',
+              'Net::NNTP'             => '3.10',
+              'Net::Netrc'            => '3.10',
+              'Net::POP3'             => '3.10',
+              'Net::Ping'             => '2.44',
+              'Net::SMTP'             => '3.10',
+              'Net::Time'             => '3.10',
+              'Opcode'                => '1.37',
+              'POSIX'                 => '1.71',
+              'Parse::CPAN::Meta'     => '2.150010',
+              'Pod::Html'             => '1.2201',
+              'Pod::Perldoc'          => '3.27',
+              'Pod::Perldoc::BaseTo'  => '3.27',
+              'Pod::Perldoc::GetOptsOO'=> '3.27',
+              'Pod::Perldoc::ToANSI'  => '3.27',
+              'Pod::Perldoc::ToChecker'=> '3.27',
+              'Pod::Perldoc::ToMan'   => '3.27',
+              'Pod::Perldoc::ToNroff' => '3.27',
+              'Pod::Perldoc::ToPod'   => '3.27',
+              'Pod::Perldoc::ToRtf'   => '3.27',
+              'Pod::Perldoc::ToTerm'  => '3.27',
+              'Pod::Perldoc::ToText'  => '3.27',
+              'Pod::Perldoc::ToTk'    => '3.27',
+              'Pod::Perldoc::ToXml'   => '3.27',
+              'Storable'              => '2.57',
+              'Sys::Syslog'           => '0.34_01',
+              'TAP::Base'             => '3.36_01',
+              'TAP::Formatter::Base'  => '3.36_01',
+              'TAP::Formatter::Color' => '3.36_01',
+              'TAP::Formatter::Console'=> '3.36_01',
+              'TAP::Formatter::Console::ParallelSession'=> '3.36_01',
+              'TAP::Formatter::Console::Session'=> '3.36_01',
+              'TAP::Formatter::File'  => '3.36_01',
+              'TAP::Formatter::File::Session'=> '3.36_01',
+              'TAP::Formatter::Session'=> '3.36_01',
+              'TAP::Harness'          => '3.36_01',
+              'TAP::Harness::Env'     => '3.36_01',
+              'TAP::Object'           => '3.36_01',
+              'TAP::Parser'           => '3.36_01',
+              'TAP::Parser::Aggregator'=> '3.36_01',
+              'TAP::Parser::Grammar'  => '3.36_01',
+              'TAP::Parser::Iterator' => '3.36_01',
+              'TAP::Parser::Iterator::Array'=> '3.36_01',
+              'TAP::Parser::Iterator::Process'=> '3.36_01',
+              'TAP::Parser::Iterator::Stream'=> '3.36_01',
+              'TAP::Parser::IteratorFactory'=> '3.36_01',
+              'TAP::Parser::Multiplexer'=> '3.36_01',
+              'TAP::Parser::Result'   => '3.36_01',
+              'TAP::Parser::Result::Bailout'=> '3.36_01',
+              'TAP::Parser::Result::Comment'=> '3.36_01',
+              'TAP::Parser::Result::Plan'=> '3.36_01',
+              'TAP::Parser::Result::Pragma'=> '3.36_01',
+              'TAP::Parser::Result::Test'=> '3.36_01',
+              'TAP::Parser::Result::Unknown'=> '3.36_01',
+              'TAP::Parser::Result::Version'=> '3.36_01',
+              'TAP::Parser::Result::YAML'=> '3.36_01',
+              'TAP::Parser::ResultFactory'=> '3.36_01',
+              'TAP::Parser::Scheduler'=> '3.36_01',
+              'TAP::Parser::Scheduler::Job'=> '3.36_01',
+              'TAP::Parser::Scheduler::Spinner'=> '3.36_01',
+              'TAP::Parser::Source'   => '3.36_01',
+              'TAP::Parser::SourceHandler'=> '3.36_01',
+              'TAP::Parser::SourceHandler::Executable'=> '3.36_01',
+              'TAP::Parser::SourceHandler::File'=> '3.36_01',
+              'TAP::Parser::SourceHandler::Handle'=> '3.36_01',
+              'TAP::Parser::SourceHandler::Perl'=> '3.36_01',
+              'TAP::Parser::SourceHandler::RawTAP'=> '3.36_01',
+              'TAP::Parser::YAMLish::Reader'=> '3.36_01',
+              'TAP::Parser::YAMLish::Writer'=> '3.36_01',
+              'Test'                  => '1.29',
+              'Test2'                 => '1.302052',
+              'Test2::API'            => '1.302052',
+              'Test2::API::Breakage'  => '1.302052',
+              'Test2::API::Context'   => '1.302052',
+              'Test2::API::Instance'  => '1.302052',
+              'Test2::API::Stack'     => '1.302052',
+              'Test2::Event'          => '1.302052',
+              'Test2::Event::Bail'    => '1.302052',
+              'Test2::Event::Diag'    => '1.302052',
+              'Test2::Event::Exception'=> '1.302052',
+              'Test2::Event::Generic' => '1.302052',
+              'Test2::Event::Info'    => '1.302052',
+              'Test2::Event::Note'    => '1.302052',
+              'Test2::Event::Ok'      => '1.302052',
+              'Test2::Event::Plan'    => '1.302052',
+              'Test2::Event::Skip'    => '1.302052',
+              'Test2::Event::Subtest' => '1.302052',
+              'Test2::Event::Waiting' => '1.302052',
+              'Test2::Formatter'      => '1.302052',
+              'Test2::Formatter::TAP' => '1.302052',
+              'Test2::Hub'            => '1.302052',
+              'Test2::Hub::Interceptor'=> '1.302052',
+              'Test2::Hub::Interceptor::Terminator'=> '1.302052',
+              'Test2::Hub::Subtest'   => '1.302052',
+              'Test2::IPC'            => '1.302052',
+              'Test2::IPC::Driver'    => '1.302052',
+              'Test2::IPC::Driver::Files'=> '1.302052',
+              'Test2::Util'           => '1.302052',
+              'Test2::Util::ExternalMeta'=> '1.302052',
+              'Test2::Util::HashBase' => '1.302052',
+              'Test2::Util::Trace'    => '1.302052',
+              'Test::Builder'         => '1.302052',
+              'Test::Builder::Formatter'=> '1.302052',
+              'Test::Builder::Module' => '1.302052',
+              'Test::Builder::Tester' => '1.302052',
+              'Test::Builder::Tester::Color'=> '1.302052',
+              'Test::Builder::TodoDiag'=> '1.302052',
+              'Test::Harness'         => '3.36_01',
+              'Test::More'            => '1.302052',
+              'Test::Simple'          => '1.302052',
+              'Test::Tester'          => '1.302052',
+              'Test::Tester::Capture' => '1.302052',
+              'Test::Tester::CaptureRunner'=> '1.302052',
+              'Test::Tester::Delegate'=> '1.302052',
+              'Test::use::ok'         => '1.302052',
+              'Tie::Hash::NamedCapture'=> '0.10',
+              'Time::Local'           => '1.24',
+              'XS::APItest'           => '0.83',
+              'arybase'               => '0.12',
+              'base'                  => '2.24',
+              'bigint'                => '0.43_01',
+              'bignum'                => '0.43_01',
+              'bigrat'                => '0.43_01',
+              'encoding'              => '2.18',
+              'ok'                    => '1.302052',
+          },
+          removed => {
+          }
+      },
+      5.025005 => {
+          delta_from => 5.025004,
+          changed => {
+              'B::Op_private'         => '5.025005',
+              'Config'                => '5.025005',
+              'Filter::Simple'        => '0.93',
+              'Locale::Codes'         => '3.40',
+              'Locale::Codes::Constants'=> '3.40',
+              'Locale::Codes::Country'=> '3.40',
+              'Locale::Codes::Country_Codes'=> '3.40',
+              'Locale::Codes::Country_Retired'=> '3.40',
+              'Locale::Codes::Currency'=> '3.40',
+              'Locale::Codes::Currency_Codes'=> '3.40',
+              'Locale::Codes::Currency_Retired'=> '3.40',
+              'Locale::Codes::LangExt'=> '3.40',
+              'Locale::Codes::LangExt_Codes'=> '3.40',
+              'Locale::Codes::LangExt_Retired'=> '3.40',
+              'Locale::Codes::LangFam'=> '3.40',
+              'Locale::Codes::LangFam_Codes'=> '3.40',
+              'Locale::Codes::LangFam_Retired'=> '3.40',
+              'Locale::Codes::LangVar'=> '3.40',
+              'Locale::Codes::LangVar_Codes'=> '3.40',
+              'Locale::Codes::LangVar_Retired'=> '3.40',
+              'Locale::Codes::Language'=> '3.40',
+              'Locale::Codes::Language_Codes'=> '3.40',
+              'Locale::Codes::Language_Retired'=> '3.40',
+              'Locale::Codes::Script' => '3.40',
+              'Locale::Codes::Script_Codes'=> '3.40',
+              'Locale::Codes::Script_Retired'=> '3.40',
+              'Locale::Country'       => '3.40',
+              'Locale::Currency'      => '3.40',
+              'Locale::Language'      => '3.40',
+              'Locale::Script'        => '3.40',
+              'Module::CoreList'      => '5.20160920',
+              'Module::CoreList::TieHashDelta'=> '5.20160920',
+              'Module::CoreList::Utils'=> '5.20160920',
+              'POSIX'                 => '1.72',
+              'Sys::Syslog'           => '0.35',
+              'Test2'                 => '1.302056',
+              'Test2::API'            => '1.302056',
+              'Test2::API::Breakage'  => '1.302056',
+              'Test2::API::Context'   => '1.302056',
+              'Test2::API::Instance'  => '1.302056',
+              'Test2::API::Stack'     => '1.302056',
+              'Test2::Event'          => '1.302056',
+              'Test2::Event::Bail'    => '1.302056',
+              'Test2::Event::Diag'    => '1.302056',
+              'Test2::Event::Exception'=> '1.302056',
+              'Test2::Event::Generic' => '1.302056',
+              'Test2::Event::Info'    => '1.302056',
+              'Test2::Event::Note'    => '1.302056',
+              'Test2::Event::Ok'      => '1.302056',
+              'Test2::Event::Plan'    => '1.302056',
+              'Test2::Event::Skip'    => '1.302056',
+              'Test2::Event::Subtest' => '1.302056',
+              'Test2::Event::Waiting' => '1.302056',
+              'Test2::Formatter'      => '1.302056',
+              'Test2::Formatter::TAP' => '1.302056',
+              'Test2::Hub'            => '1.302056',
+              'Test2::Hub::Interceptor'=> '1.302056',
+              'Test2::Hub::Interceptor::Terminator'=> '1.302056',
+              'Test2::Hub::Subtest'   => '1.302056',
+              'Test2::IPC'            => '1.302056',
+              'Test2::IPC::Driver'    => '1.302056',
+              'Test2::IPC::Driver::Files'=> '1.302056',
+              'Test2::Util'           => '1.302056',
+              'Test2::Util::ExternalMeta'=> '1.302056',
+              'Test2::Util::HashBase' => '1.302056',
+              'Test2::Util::Trace'    => '1.302056',
+              'Test::Builder'         => '1.302056',
+              'Test::Builder::Formatter'=> '1.302056',
+              'Test::Builder::Module' => '1.302056',
+              'Test::Builder::Tester' => '1.302056',
+              'Test::Builder::Tester::Color'=> '1.302056',
+              'Test::Builder::TodoDiag'=> '1.302056',
+              'Test::More'            => '1.302056',
+              'Test::Simple'          => '1.302056',
+              'Test::Tester'          => '1.302056',
+              'Test::Tester::Capture' => '1.302056',
+              'Test::Tester::CaptureRunner'=> '1.302056',
+              'Test::Tester::Delegate'=> '1.302056',
+              'Test::use::ok'         => '1.302056',
+              'Thread::Semaphore'     => '2.13',
+              'XS::APItest'           => '0.84',
+              'XSLoader'              => '0.24',
+              'ok'                    => '1.302056',
+          },
+          removed => {
+          }
+      },
+      5.025006 => {
+          delta_from => 5.025005,
+          changed => {
+              'Archive::Tar'          => '2.14',
+              'Archive::Tar::Constant'=> '2.14',
+              'Archive::Tar::File'    => '2.14',
+              'B'                     => '1.64',
+              'B::Concise'            => '0.999',
+              'B::Deparse'            => '1.39',
+              'B::Op_private'         => '5.025006',
+              'Config'                => '5.025006',
+              'Data::Dumper'          => '2.162',
+              'Devel::Peek'           => '1.25',
+              'HTTP::Tiny'            => '0.070',
+              'List::Util'            => '1.46',
+              'List::Util::XS'        => '1.46',
+              'Module::CoreList'      => '5.20161020',
+              'Module::CoreList::TieHashDelta'=> '5.20161020',
+              'Module::CoreList::Utils'=> '5.20161020',
+              'Net::Ping'             => '2.51',
+              'OS2::DLL'              => '1.07',
+              'Opcode'                => '1.38',
+              'POSIX'                 => '1.73',
+              'PerlIO::encoding'      => '0.25',
+              'Pod::Man'              => '4.08',
+              'Pod::ParseLink'        => '4.08',
+              'Pod::Text'             => '4.08',
+              'Pod::Text::Color'      => '4.08',
+              'Pod::Text::Overstrike' => '4.08',
+              'Pod::Text::Termcap'    => '4.08',
+              'Scalar::Util'          => '1.46',
+              'Storable'              => '2.58',
+              'Sub::Util'             => '1.46',
+              'Test2'                 => '1.302059',
+              'Test2::API'            => '1.302059',
+              'Test2::API::Breakage'  => '1.302059',
+              'Test2::API::Context'   => '1.302059',
+              'Test2::API::Instance'  => '1.302059',
+              'Test2::API::Stack'     => '1.302059',
+              'Test2::Event'          => '1.302059',
+              'Test2::Event::Bail'    => '1.302059',
+              'Test2::Event::Diag'    => '1.302059',
+              'Test2::Event::Exception'=> '1.302059',
+              'Test2::Event::Generic' => '1.302059',
+              'Test2::Event::Info'    => '1.302059',
+              'Test2::Event::Note'    => '1.302059',
+              'Test2::Event::Ok'      => '1.302059',
+              'Test2::Event::Plan'    => '1.302059',
+              'Test2::Event::Skip'    => '1.302059',
+              'Test2::Event::Subtest' => '1.302059',
+              'Test2::Event::Waiting' => '1.302059',
+              'Test2::Formatter'      => '1.302059',
+              'Test2::Formatter::TAP' => '1.302059',
+              'Test2::Hub'            => '1.302059',
+              'Test2::Hub::Interceptor'=> '1.302059',
+              'Test2::Hub::Interceptor::Terminator'=> '1.302059',
+              'Test2::Hub::Subtest'   => '1.302059',
+              'Test2::IPC'            => '1.302059',
+              'Test2::IPC::Driver'    => '1.302059',
+              'Test2::IPC::Driver::Files'=> '1.302059',
+              'Test2::Util'           => '1.302059',
+              'Test2::Util::ExternalMeta'=> '1.302059',
+              'Test2::Util::HashBase' => '1.302059',
+              'Test2::Util::Trace'    => '1.302059',
+              'Test::Builder'         => '1.302059',
+              'Test::Builder::Formatter'=> '1.302059',
+              'Test::Builder::Module' => '1.302059',
+              'Test::Builder::Tester' => '1.302059',
+              'Test::Builder::Tester::Color'=> '1.302059',
+              'Test::Builder::TodoDiag'=> '1.302059',
+              'Test::More'            => '1.302059',
+              'Test::Simple'          => '1.302059',
+              'Test::Tester'          => '1.302059',
+              'Test::Tester::Capture' => '1.302059',
+              'Test::Tester::CaptureRunner'=> '1.302059',
+              'Test::Tester::Delegate'=> '1.302059',
+              'Test::use::ok'         => '1.302059',
+              'Time::HiRes'           => '1.9740_01',
+              'VMS::Stdio'            => '2.42',
+              'XS::APItest'           => '0.86',
+              'attributes'            => '0.28',
+              'mro'                   => '1.19',
+              'ok'                    => '1.302059',
+              'overload'              => '1.27',
+              'parent'                => '0.236',
+          },
+          removed => {
+          }
+      },
+      5.025007 => {
+          delta_from => 5.025006,
+          changed => {
+              'Archive::Tar'          => '2.18',
+              'Archive::Tar::Constant'=> '2.18',
+              'Archive::Tar::File'    => '2.18',
+              'B'                     => '1.65',
+              'B::Op_private'         => '5.025007',
+              'Config'                => '5.025007',
+              'Cwd'                   => '3.66',
+              'Data::Dumper'          => '2.165',
+              'Devel::Peek'           => '1.26',
+              'DynaLoader'            => '1.40',
+              'Errno'                 => '1.27',
+              'ExtUtils::ParseXS::Utilities'=> '3.34',
+              'File::Spec'            => '3.66',
+              'File::Spec::AmigaOS'   => '3.66',
+              'File::Spec::Cygwin'    => '3.66',
+              'File::Spec::Epoc'      => '3.66',
+              'File::Spec::Functions' => '3.66',
+              'File::Spec::Mac'       => '3.66',
+              'File::Spec::OS2'       => '3.66',
+              'File::Spec::Unix'      => '3.66',
+              'File::Spec::VMS'       => '3.66',
+              'File::Spec::Win32'     => '3.66',
+              'Hash::Util'            => '0.22',
+              'JSON::PP'              => '2.27400_02',
+              'List::Util'            => '1.46_02',
+              'List::Util::XS'        => '1.46_02',
+              'Math::BigFloat'        => '1.999727',
+              'Math::BigInt'          => '1.999727',
+              'Math::BigInt::Calc'    => '1.999727',
+              'Math::BigInt::CalcEmu' => '1.999727',
+              'Math::Complex'         => '1.5901',
+              'Module::CoreList'      => '5.20161120',
+              'Module::CoreList::TieHashDelta'=> '5.20161120',
+              'Module::CoreList::Utils'=> '5.20161120',
+              'Net::Ping'             => '2.55',
+              'Opcode'                => '1.39',
+              'POSIX'                 => '1.75',
+              'Pod::Man'              => '4.09',
+              'Pod::ParseLink'        => '4.09',
+              'Pod::Text'             => '4.09',
+              'Pod::Text::Color'      => '4.09',
+              'Pod::Text::Overstrike' => '4.09',
+              'Pod::Text::Termcap'    => '4.09',
+              'Scalar::Util'          => '1.46_02',
+              'Storable'              => '2.59',
+              'Sub::Util'             => '1.46_02',
+              'Term::ANSIColor'       => '4.06',
+              'Test2'                 => '1.302062',
+              'Test2::API'            => '1.302062',
+              'Test2::API::Breakage'  => '1.302062',
+              'Test2::API::Context'   => '1.302062',
+              'Test2::API::Instance'  => '1.302062',
+              'Test2::API::Stack'     => '1.302062',
+              'Test2::Event'          => '1.302062',
+              'Test2::Event::Bail'    => '1.302062',
+              'Test2::Event::Diag'    => '1.302062',
+              'Test2::Event::Exception'=> '1.302062',
+              'Test2::Event::Generic' => '1.302062',
+              'Test2::Event::Info'    => '1.302062',
+              'Test2::Event::Note'    => '1.302062',
+              'Test2::Event::Ok'      => '1.302062',
+              'Test2::Event::Plan'    => '1.302062',
+              'Test2::Event::Skip'    => '1.302062',
+              'Test2::Event::Subtest' => '1.302062',
+              'Test2::Event::Waiting' => '1.302062',
+              'Test2::Formatter'      => '1.302062',
+              'Test2::Formatter::TAP' => '1.302062',
+              'Test2::Hub'            => '1.302062',
+              'Test2::Hub::Interceptor'=> '1.302062',
+              'Test2::Hub::Interceptor::Terminator'=> '1.302062',
+              'Test2::Hub::Subtest'   => '1.302062',
+              'Test2::IPC'            => '1.302062',
+              'Test2::IPC::Driver'    => '1.302062',
+              'Test2::IPC::Driver::Files'=> '1.302062',
+              'Test2::Util'           => '1.302062',
+              'Test2::Util::ExternalMeta'=> '1.302062',
+              'Test2::Util::HashBase' => '1.302062',
+              'Test2::Util::Trace'    => '1.302062',
+              'Test::Builder'         => '1.302062',
+              'Test::Builder::Formatter'=> '1.302062',
+              'Test::Builder::Module' => '1.302062',
+              'Test::Builder::Tester' => '1.302062',
+              'Test::Builder::Tester::Color'=> '1.302062',
+              'Test::Builder::TodoDiag'=> '1.302062',
+              'Test::More'            => '1.302062',
+              'Test::Simple'          => '1.302062',
+              'Test::Tester'          => '1.302062',
+              'Test::Tester::Capture' => '1.302062',
+              'Test::Tester::CaptureRunner'=> '1.302062',
+              'Test::Tester::Delegate'=> '1.302062',
+              'Test::use::ok'         => '1.302062',
+              'Time::HiRes'           => '1.9740_03',
+              'Unicode::Collate'      => '1.18',
+              'Unicode::Collate::CJK::Big5'=> '1.18',
+              'Unicode::Collate::CJK::GB2312'=> '1.18',
+              'Unicode::Collate::CJK::JISX0208'=> '1.18',
+              'Unicode::Collate::CJK::Korean'=> '1.18',
+              'Unicode::Collate::CJK::Pinyin'=> '1.18',
+              'Unicode::Collate::CJK::Stroke'=> '1.18',
+              'Unicode::Collate::CJK::Zhuyin'=> '1.18',
+              'Unicode::Collate::Locale'=> '1.18',
+              'Unicode::UCD'          => '0.67',
+              'XS::APItest'           => '0.87',
+              'XS::Typemap'           => '0.15',
+              'mro'                   => '1.20',
+              'ok'                    => '1.302062',
+              'threads'               => '2.10',
+          },
+          removed => {
+          }
+      },
+      5.025008 => {
+          delta_from => 5.025007,
+          changed => {
+              'Archive::Tar'          => '2.24',
+              'Archive::Tar::Constant'=> '2.24',
+              'Archive::Tar::File'    => '2.24',
+              'B::Debug'              => '1.24',
+              'B::Op_private'         => '5.025008',
+              'Config'                => '5.025008',
+              'Data::Dumper'          => '2.166',
+              'Encode'                => '2.88',
+              'Encode::Alias'         => '2.21',
+              'Encode::CN::HZ'        => '2.08',
+              'Encode::MIME::Header'  => '2.24',
+              'Encode::MIME::Name'    => '1.02',
+              'Encode::Unicode'       => '2.1501',
+              'IO'                    => '1.38',
+              'Locale::Codes'         => '3.42',
+              'Locale::Codes::Constants'=> '3.42',
+              'Locale::Codes::Country'=> '3.42',
+              'Locale::Codes::Country_Codes'=> '3.42',
+              'Locale::Codes::Country_Retired'=> '3.42',
+              'Locale::Codes::Currency'=> '3.42',
+              'Locale::Codes::Currency_Codes'=> '3.42',
+              'Locale::Codes::Currency_Retired'=> '3.42',
+              'Locale::Codes::LangExt'=> '3.42',
+              'Locale::Codes::LangExt_Codes'=> '3.42',
+              'Locale::Codes::LangExt_Retired'=> '3.42',
+              'Locale::Codes::LangFam'=> '3.42',
+              'Locale::Codes::LangFam_Codes'=> '3.42',
+              'Locale::Codes::LangFam_Retired'=> '3.42',
+              'Locale::Codes::LangVar'=> '3.42',
+              'Locale::Codes::LangVar_Codes'=> '3.42',
+              'Locale::Codes::LangVar_Retired'=> '3.42',
+              'Locale::Codes::Language'=> '3.42',
+              'Locale::Codes::Language_Codes'=> '3.42',
+              'Locale::Codes::Language_Retired'=> '3.42',
+              'Locale::Codes::Script' => '3.42',
+              'Locale::Codes::Script_Codes'=> '3.42',
+              'Locale::Codes::Script_Retired'=> '3.42',
+              'Locale::Country'       => '3.42',
+              'Locale::Currency'      => '3.42',
+              'Locale::Language'      => '3.42',
+              'Locale::Script'        => '3.42',
+              'Math::BigFloat'        => '1.999806',
+              'Math::BigFloat::Trace' => '0.47',
+              'Math::BigInt'          => '1.999806',
+              'Math::BigInt::Calc'    => '1.999806',
+              'Math::BigInt::CalcEmu' => '1.999806',
+              'Math::BigInt::FastCalc'=> '0.5005',
+              'Math::BigInt::Lib'     => '1.999806',
+              'Math::BigInt::Trace'   => '0.47',
+              'Math::BigRat'          => '0.2611',
+              'Module::CoreList'      => '5.20161220',
+              'Module::CoreList::TieHashDelta'=> '5.20161220',
+              'Module::CoreList::Utils'=> '5.20161220',
+              'POSIX'                 => '1.76',
+              'PerlIO::scalar'        => '0.25',
+              'Pod::Simple'           => '3.35',
+              'Pod::Simple::BlackBox' => '3.35',
+              'Pod::Simple::Checker'  => '3.35',
+              'Pod::Simple::Debug'    => '3.35',
+              'Pod::Simple::DumpAsText'=> '3.35',
+              'Pod::Simple::DumpAsXML'=> '3.35',
+              'Pod::Simple::HTML'     => '3.35',
+              'Pod::Simple::HTMLBatch'=> '3.35',
+              'Pod::Simple::LinkSection'=> '3.35',
+              'Pod::Simple::Methody'  => '3.35',
+              'Pod::Simple::Progress' => '3.35',
+              'Pod::Simple::PullParser'=> '3.35',
+              'Pod::Simple::PullParserEndToken'=> '3.35',
+              'Pod::Simple::PullParserStartToken'=> '3.35',
+              'Pod::Simple::PullParserTextToken'=> '3.35',
+              'Pod::Simple::PullParserToken'=> '3.35',
+              'Pod::Simple::RTF'      => '3.35',
+              'Pod::Simple::Search'   => '3.35',
+              'Pod::Simple::SimpleTree'=> '3.35',
+              'Pod::Simple::Text'     => '3.35',
+              'Pod::Simple::TextContent'=> '3.35',
+              'Pod::Simple::TiedOutFH'=> '3.35',
+              'Pod::Simple::Transcode'=> '3.35',
+              'Pod::Simple::TranscodeDumb'=> '3.35',
+              'Pod::Simple::TranscodeSmart'=> '3.35',
+              'Pod::Simple::XHTML'    => '3.35',
+              'Pod::Simple::XMLOutStream'=> '3.35',
+              'Test2'                 => '1.302073',
+              'Test2::API'            => '1.302073',
+              'Test2::API::Breakage'  => '1.302073',
+              'Test2::API::Context'   => '1.302073',
+              'Test2::API::Instance'  => '1.302073',
+              'Test2::API::Stack'     => '1.302073',
+              'Test2::Event'          => '1.302073',
+              'Test2::Event::Bail'    => '1.302073',
+              'Test2::Event::Diag'    => '1.302073',
+              'Test2::Event::Encoding'=> '1.302073',
+              'Test2::Event::Exception'=> '1.302073',
+              'Test2::Event::Generic' => '1.302073',
+              'Test2::Event::Info'    => '1.302073',
+              'Test2::Event::Note'    => '1.302073',
+              'Test2::Event::Ok'      => '1.302073',
+              'Test2::Event::Plan'    => '1.302073',
+              'Test2::Event::Skip'    => '1.302073',
+              'Test2::Event::Subtest' => '1.302073',
+              'Test2::Event::TAP::Version'=> '1.302073',
+              'Test2::Event::Waiting' => '1.302073',
+              'Test2::Formatter'      => '1.302073',
+              'Test2::Formatter::TAP' => '1.302073',
+              'Test2::Hub'            => '1.302073',
+              'Test2::Hub::Interceptor'=> '1.302073',
+              'Test2::Hub::Interceptor::Terminator'=> '1.302073',
+              'Test2::Hub::Subtest'   => '1.302073',
+              'Test2::IPC'            => '1.302073',
+              'Test2::IPC::Driver'    => '1.302073',
+              'Test2::IPC::Driver::Files'=> '1.302073',
+              'Test2::Tools::Tiny'    => '1.302073',
+              'Test2::Util'           => '1.302073',
+              'Test2::Util::ExternalMeta'=> '1.302073',
+              'Test2::Util::HashBase' => '0.002',
+              'Test2::Util::Trace'    => '1.302073',
+              'Test::Builder'         => '1.302073',
+              'Test::Builder::Formatter'=> '1.302073',
+              'Test::Builder::Module' => '1.302073',
+              'Test::Builder::Tester' => '1.302073',
+              'Test::Builder::Tester::Color'=> '1.302073',
+              'Test::Builder::TodoDiag'=> '1.302073',
+              'Test::More'            => '1.302073',
+              'Test::Simple'          => '1.302073',
+              'Test::Tester'          => '1.302073',
+              'Test::Tester::Capture' => '1.302073',
+              'Test::Tester::CaptureRunner'=> '1.302073',
+              'Test::Tester::Delegate'=> '1.302073',
+              'Test::use::ok'         => '1.302073',
+              'Time::HiRes'           => '1.9741',
+              'Time::Local'           => '1.25',
+              'Unicode::Collate'      => '1.19',
+              'Unicode::Collate::CJK::Big5'=> '1.19',
+              'Unicode::Collate::CJK::GB2312'=> '1.19',
+              'Unicode::Collate::CJK::JISX0208'=> '1.19',
+              'Unicode::Collate::CJK::Korean'=> '1.19',
+              'Unicode::Collate::CJK::Pinyin'=> '1.19',
+              'Unicode::Collate::CJK::Stroke'=> '1.19',
+              'Unicode::Collate::CJK::Zhuyin'=> '1.19',
+              'Unicode::Collate::Locale'=> '1.19',
+              'bigint'                => '0.47',
+              'bignum'                => '0.47',
+              'bigrat'                => '0.47',
+              'encoding'              => '2.19',
+              'ok'                    => '1.302073',
+          },
+          removed => {
+          }
+      },
+      5.022003 => {
+          delta_from => 5.022002,
+          changed => {
+              'App::Cpan'             => '1.63_01',
+              'App::Prove'            => '3.35_01',
+              'App::Prove::State'     => '3.35_01',
+              'App::Prove::State::Result'=> '3.35_01',
+              'App::Prove::State::Result::Test'=> '3.35_01',
+              'Archive::Tar'          => '2.04_01',
+              'Archive::Tar::Constant'=> '2.04_01',
+              'Archive::Tar::File'    => '2.04_01',
+              'B::Op_private'         => '5.022003',
+              'CPAN'                  => '2.11_01',
+              'Compress::Zlib'        => '2.068_001',
+              'Config'                => '5.022003',
+              'Cwd'                   => '3.56_02',
+              'Digest'                => '1.17_01',
+              'Digest::SHA'           => '5.95_01',
+              'Encode'                => '2.72_01',
+              'ExtUtils::Command'     => '1.20_01',
+              'ExtUtils::Command::MM' => '7.04_02',
+              'ExtUtils::Liblist'     => '7.04_02',
+              'ExtUtils::Liblist::Kid'=> '7.04_02',
+              'ExtUtils::MM'          => '7.04_02',
+              'ExtUtils::MM_AIX'      => '7.04_02',
+              'ExtUtils::MM_Any'      => '7.04_02',
+              'ExtUtils::MM_BeOS'     => '7.04_02',
+              'ExtUtils::MM_Cygwin'   => '7.04_02',
+              'ExtUtils::MM_DOS'      => '7.04_02',
+              'ExtUtils::MM_Darwin'   => '7.04_02',
+              'ExtUtils::MM_MacOS'    => '7.04_02',
+              'ExtUtils::MM_NW5'      => '7.04_02',
+              'ExtUtils::MM_OS2'      => '7.04_02',
+              'ExtUtils::MM_QNX'      => '7.04_02',
+              'ExtUtils::MM_UWIN'     => '7.04_02',
+              'ExtUtils::MM_Unix'     => '7.04_02',
+              'ExtUtils::MM_VMS'      => '7.04_02',
+              'ExtUtils::MM_VOS'      => '7.04_02',
+              'ExtUtils::MM_Win32'    => '7.04_02',
+              'ExtUtils::MM_Win95'    => '7.04_02',
+              'ExtUtils::MY'          => '7.04_02',
+              'ExtUtils::MakeMaker'   => '7.04_02',
+              'ExtUtils::MakeMaker::Config'=> '7.04_02',
+              'ExtUtils::Mkbootstrap' => '7.04_02',
+              'ExtUtils::Mksymlists'  => '7.04_02',
+              'ExtUtils::testlib'     => '7.04_02',
+              'File::Fetch'           => '0.48_01',
+              'File::Spec'            => '3.56_02',
+              'File::Spec::Cygwin'    => '3.56_02',
+              'File::Spec::Epoc'      => '3.56_02',
+              'File::Spec::Functions' => '3.56_02',
+              'File::Spec::Mac'       => '3.56_02',
+              'File::Spec::OS2'       => '3.56_02',
+              'File::Spec::Unix'      => '3.56_02',
+              'File::Spec::VMS'       => '3.56_02',
+              'File::Spec::Win32'     => '3.56_02',
+              'HTTP::Tiny'            => '0.054_01',
+              'I18N::LangTags::Detect'=> '1.05_01',
+              'IO'                    => '1.35_01',
+              'IO::Compress::Adapter::Bzip2'=> '2.068_001',
+              'IO::Compress::Adapter::Deflate'=> '2.068_001',
+              'IO::Compress::Adapter::Identity'=> '2.068_001',
+              'IO::Compress::Base'    => '2.068_001',
+              'IO::Compress::Base::Common'=> '2.068_001',
+              'IO::Compress::Bzip2'   => '2.068_001',
+              'IO::Compress::Deflate' => '2.068_001',
+              'IO::Compress::Gzip'    => '2.068_001',
+              'IO::Compress::Gzip::Constants'=> '2.068_001',
+              'IO::Compress::RawDeflate'=> '2.068_001',
+              'IO::Compress::Zip'     => '2.068_001',
+              'IO::Compress::Zip::Constants'=> '2.068_001',
+              'IO::Compress::Zlib::Constants'=> '2.068_001',
+              'IO::Compress::Zlib::Extra'=> '2.068_001',
+              'IO::Uncompress::Adapter::Bunzip2'=> '2.068_001',
+              'IO::Uncompress::Adapter::Identity'=> '2.068_001',
+              'IO::Uncompress::Adapter::Inflate'=> '2.068_001',
+              'IO::Uncompress::AnyInflate'=> '2.068_001',
+              'IO::Uncompress::AnyUncompress'=> '2.068_001',
+              'IO::Uncompress::Base'  => '2.068_001',
+              'IO::Uncompress::Bunzip2'=> '2.068_001',
+              'IO::Uncompress::Gunzip'=> '2.068_001',
+              'IO::Uncompress::Inflate'=> '2.068_001',
+              'IO::Uncompress::RawInflate'=> '2.068_001',
+              'IO::Uncompress::Unzip' => '2.068_001',
+              'IPC::Cmd'              => '0.92_01',
+              'JSON::PP'              => '2.27300_01',
+              'Locale::Maketext'      => '1.26_01',
+              'Locale::Maketext::Simple'=> '0.21_01',
+              'Memoize'               => '1.03_01',
+              'Module::CoreList'      => '5.20170114_22',
+              'Module::CoreList::TieHashDelta'=> '5.20170114_22',
+              'Module::CoreList::Utils'=> '5.20170114_22',
+              'Module::Metadata::corpus::BOMTest::UTF16BE'=> undef,
+              'Module::Metadata::corpus::BOMTest::UTF16LE'=> undef,
+              'Module::Metadata::corpus::BOMTest::UTF8'=> '1',
+              'Net::Cmd'              => '3.05_01',
+              'Net::Config'           => '3.05_01',
+              'Net::Domain'           => '3.05_01',
+              'Net::FTP'              => '3.05_01',
+              'Net::FTP::A'           => '3.05_01',
+              'Net::FTP::E'           => '3.05_01',
+              'Net::FTP::I'           => '3.05_01',
+              'Net::FTP::L'           => '3.05_01',
+              'Net::FTP::dataconn'    => '3.05_01',
+              'Net::NNTP'             => '3.05_01',
+              'Net::Netrc'            => '3.05_01',
+              'Net::POP3'             => '3.05_01',
+              'Net::Ping'             => '2.43_01',
+              'Net::SMTP'             => '3.05_01',
+              'Net::Time'             => '3.05_01',
+              'Parse::CPAN::Meta'     => '1.4414_001',
+              'Pod::Html'             => '1.2201',
+              'Pod::Perldoc'          => '3.25_01',
+              'Storable'              => '2.53_02',
+              'Sys::Syslog'           => '0.33_01',
+              'TAP::Base'             => '3.35_01',
+              'TAP::Formatter::Base'  => '3.35_01',
+              'TAP::Formatter::Color' => '3.35_01',
+              'TAP::Formatter::Console'=> '3.35_01',
+              'TAP::Formatter::Console::ParallelSession'=> '3.35_01',
+              'TAP::Formatter::Console::Session'=> '3.35_01',
+              'TAP::Formatter::File'  => '3.35_01',
+              'TAP::Formatter::File::Session'=> '3.35_01',
+              'TAP::Formatter::Session'=> '3.35_01',
+              'TAP::Harness'          => '3.35_01',
+              'TAP::Harness::Env'     => '3.35_01',
+              'TAP::Object'           => '3.35_01',
+              'TAP::Parser'           => '3.35_01',
+              'TAP::Parser::Aggregator'=> '3.35_01',
+              'TAP::Parser::Grammar'  => '3.35_01',
+              'TAP::Parser::Iterator' => '3.35_01',
+              'TAP::Parser::Iterator::Array'=> '3.35_01',
+              'TAP::Parser::Iterator::Process'=> '3.35_01',
+              'TAP::Parser::Iterator::Stream'=> '3.35_01',
+              'TAP::Parser::IteratorFactory'=> '3.35_01',
+              'TAP::Parser::Multiplexer'=> '3.35_01',
+              'TAP::Parser::Result'   => '3.35_01',
+              'TAP::Parser::Result::Bailout'=> '3.35_01',
+              'TAP::Parser::Result::Comment'=> '3.35_01',
+              'TAP::Parser::Result::Plan'=> '3.35_01',
+              'TAP::Parser::Result::Pragma'=> '3.35_01',
+              'TAP::Parser::Result::Test'=> '3.35_01',
+              'TAP::Parser::Result::Unknown'=> '3.35_01',
+              'TAP::Parser::Result::Version'=> '3.35_01',
+              'TAP::Parser::Result::YAML'=> '3.35_01',
+              'TAP::Parser::ResultFactory'=> '3.35_01',
+              'TAP::Parser::Scheduler'=> '3.35_01',
+              'TAP::Parser::Scheduler::Job'=> '3.35_01',
+              'TAP::Parser::Scheduler::Spinner'=> '3.35_01',
+              'TAP::Parser::Source'   => '3.35_01',
+              'TAP::Parser::SourceHandler'=> '3.35_01',
+              'TAP::Parser::SourceHandler::Executable'=> '3.35_01',
+              'TAP::Parser::SourceHandler::File'=> '3.35_01',
+              'TAP::Parser::SourceHandler::Handle'=> '3.35_01',
+              'TAP::Parser::SourceHandler::Perl'=> '3.35_01',
+              'TAP::Parser::SourceHandler::RawTAP'=> '3.35_01',
+              'TAP::Parser::YAMLish::Reader'=> '3.35_01',
+              'TAP::Parser::YAMLish::Writer'=> '3.35_01',
+              'Test'                  => '1.26_01',
+              'Test::Harness'         => '3.35_01',
+              'XSLoader'              => '0.20_01',
+              'bigint'                => '0.39_01',
+              'bignum'                => '0.39_01',
+              'bigrat'                => '0.39_01',
+          },
+          removed => {
+          }
+      },
+      5.024001 => {
+          delta_from => 5.024000,
+          changed => {
+              'App::Cpan'             => '1.63_01',
+              'App::Prove'            => '3.36_01',
+              'App::Prove::State'     => '3.36_01',
+              'App::Prove::State::Result'=> '3.36_01',
+              'App::Prove::State::Result::Test'=> '3.36_01',
+              'Archive::Tar'          => '2.04_01',
+              'Archive::Tar::Constant'=> '2.04_01',
+              'Archive::Tar::File'    => '2.04_01',
+              'B::Op_private'         => '5.024001',
+              'CPAN'                  => '2.11_01',
+              'Compress::Zlib'        => '2.069_001',
+              'Config'                => '5.024001',
+              'Cwd'                   => '3.63_01',
+              'Digest'                => '1.17_01',
+              'Digest::SHA'           => '5.95_01',
+              'Encode'                => '2.80_01',
+              'ExtUtils::Command'     => '7.10_02',
+              'ExtUtils::Command::MM' => '7.10_02',
+              'ExtUtils::Liblist'     => '7.10_02',
+              'ExtUtils::Liblist::Kid'=> '7.10_02',
+              'ExtUtils::MM'          => '7.10_02',
+              'ExtUtils::MM_AIX'      => '7.10_02',
+              'ExtUtils::MM_Any'      => '7.10_02',
+              'ExtUtils::MM_BeOS'     => '7.10_02',
+              'ExtUtils::MM_Cygwin'   => '7.10_02',
+              'ExtUtils::MM_DOS'      => '7.10_02',
+              'ExtUtils::MM_Darwin'   => '7.10_02',
+              'ExtUtils::MM_MacOS'    => '7.10_02',
+              'ExtUtils::MM_NW5'      => '7.10_02',
+              'ExtUtils::MM_OS2'      => '7.10_02',
+              'ExtUtils::MM_QNX'      => '7.10_02',
+              'ExtUtils::MM_UWIN'     => '7.10_02',
+              'ExtUtils::MM_Unix'     => '7.10_02',
+              'ExtUtils::MM_VMS'      => '7.10_02',
+              'ExtUtils::MM_VOS'      => '7.10_02',
+              'ExtUtils::MM_Win32'    => '7.10_02',
+              'ExtUtils::MM_Win95'    => '7.10_02',
+              'ExtUtils::MY'          => '7.10_02',
+              'ExtUtils::MakeMaker'   => '7.10_02',
+              'ExtUtils::MakeMaker::Config'=> '7.10_02',
+              'ExtUtils::Mkbootstrap' => '7.10_02',
+              'ExtUtils::Mksymlists'  => '7.10_02',
+              'ExtUtils::testlib'     => '7.10_02',
+              'File::Fetch'           => '0.48_01',
+              'File::Spec'            => '3.63_01',
+              'File::Spec::Cygwin'    => '3.63_01',
+              'File::Spec::Epoc'      => '3.63_01',
+              'File::Spec::Functions' => '3.63_01',
+              'File::Spec::Mac'       => '3.63_01',
+              'File::Spec::OS2'       => '3.63_01',
+              'File::Spec::Unix'      => '3.63_01',
+              'File::Spec::VMS'       => '3.63_01',
+              'File::Spec::Win32'     => '3.63_01',
+              'HTTP::Tiny'            => '0.056_001',
+              'I18N::LangTags::Detect'=> '1.05_01',
+              'IO'                    => '1.36_01',
+              'IO::Compress::Adapter::Bzip2'=> '2.069_001',
+              'IO::Compress::Adapter::Deflate'=> '2.069_001',
+              'IO::Compress::Adapter::Identity'=> '2.069_001',
+              'IO::Compress::Base'    => '2.069_001',
+              'IO::Compress::Base::Common'=> '2.069_001',
+              'IO::Compress::Bzip2'   => '2.069_001',
+              'IO::Compress::Deflate' => '2.069_001',
+              'IO::Compress::Gzip'    => '2.069_001',
+              'IO::Compress::Gzip::Constants'=> '2.069_001',
+              'IO::Compress::RawDeflate'=> '2.069_001',
+              'IO::Compress::Zip'     => '2.069_001',
+              'IO::Compress::Zip::Constants'=> '2.069_001',
+              'IO::Compress::Zlib::Constants'=> '2.069_001',
+              'IO::Compress::Zlib::Extra'=> '2.069_001',
+              'IO::Uncompress::Adapter::Bunzip2'=> '2.069_001',
+              'IO::Uncompress::Adapter::Identity'=> '2.069_001',
+              'IO::Uncompress::Adapter::Inflate'=> '2.069_001',
+              'IO::Uncompress::AnyInflate'=> '2.069_001',
+              'IO::Uncompress::AnyUncompress'=> '2.069_001',
+              'IO::Uncompress::Base'  => '2.069_001',
+              'IO::Uncompress::Bunzip2'=> '2.069_001',
+              'IO::Uncompress::Gunzip'=> '2.069_001',
+              'IO::Uncompress::Inflate'=> '2.069_001',
+              'IO::Uncompress::RawInflate'=> '2.069_001',
+              'IO::Uncompress::Unzip' => '2.069_001',
+              'IPC::Cmd'              => '0.92_01',
+              'JSON::PP'              => '2.27300_01',
+              'Locale::Maketext'      => '1.26_01',
+              'Locale::Maketext::Simple'=> '0.21_01',
+              'Math::BigFloat::Trace' => '0.42_01',
+              'Math::BigInt::Trace'   => '0.42_01',
+              'Memoize'               => '1.03_01',
+              'Module::CoreList'      => '5.20170114_24',
+              'Module::CoreList::TieHashDelta'=> '5.20170114_24',
+              'Module::CoreList::Utils'=> '5.20170114_24',
+              'Module::Metadata::corpus::BOMTest::UTF16BE'=> undef,
+              'Module::Metadata::corpus::BOMTest::UTF16LE'=> undef,
+              'Module::Metadata::corpus::BOMTest::UTF8'=> '1',
+              'Net::Cmd'              => '3.08_01',
+              'Net::Config'           => '3.08_01',
+              'Net::Domain'           => '3.08_01',
+              'Net::FTP'              => '3.08_01',
+              'Net::FTP::A'           => '3.08_01',
+              'Net::FTP::E'           => '3.08_01',
+              'Net::FTP::I'           => '3.08_01',
+              'Net::FTP::L'           => '3.08_01',
+              'Net::FTP::dataconn'    => '3.08_01',
+              'Net::NNTP'             => '3.08_01',
+              'Net::Netrc'            => '3.08_01',
+              'Net::POP3'             => '3.08_01',
+              'Net::Ping'             => '2.43_01',
+              'Net::SMTP'             => '3.08_01',
+              'Net::Time'             => '3.08_01',
+              'Parse::CPAN::Meta'     => '1.4417_001',
+              'Pod::Html'             => '1.2201',
+              'Pod::Perldoc'          => '3.25_03',
+              'Storable'              => '2.56_01',
+              'Sys::Syslog'           => '0.33_01',
+              'TAP::Base'             => '3.36_01',
+              'TAP::Formatter::Base'  => '3.36_01',
+              'TAP::Formatter::Color' => '3.36_01',
+              'TAP::Formatter::Console'=> '3.36_01',
+              'TAP::Formatter::Console::ParallelSession'=> '3.36_01',
+              'TAP::Formatter::Console::Session'=> '3.36_01',
+              'TAP::Formatter::File'  => '3.36_01',
+              'TAP::Formatter::File::Session'=> '3.36_01',
+              'TAP::Formatter::Session'=> '3.36_01',
+              'TAP::Harness'          => '3.36_01',
+              'TAP::Harness::Env'     => '3.36_01',
+              'TAP::Object'           => '3.36_01',
+              'TAP::Parser'           => '3.36_01',
+              'TAP::Parser::Aggregator'=> '3.36_01',
+              'TAP::Parser::Grammar'  => '3.36_01',
+              'TAP::Parser::Iterator' => '3.36_01',
+              'TAP::Parser::Iterator::Array'=> '3.36_01',
+              'TAP::Parser::Iterator::Process'=> '3.36_01',
+              'TAP::Parser::Iterator::Stream'=> '3.36_01',
+              'TAP::Parser::IteratorFactory'=> '3.36_01',
+              'TAP::Parser::Multiplexer'=> '3.36_01',
+              'TAP::Parser::Result'   => '3.36_01',
+              'TAP::Parser::Result::Bailout'=> '3.36_01',
+              'TAP::Parser::Result::Comment'=> '3.36_01',
+              'TAP::Parser::Result::Plan'=> '3.36_01',
+              'TAP::Parser::Result::Pragma'=> '3.36_01',
+              'TAP::Parser::Result::Test'=> '3.36_01',
+              'TAP::Parser::Result::Unknown'=> '3.36_01',
+              'TAP::Parser::Result::Version'=> '3.36_01',
+              'TAP::Parser::Result::YAML'=> '3.36_01',
+              'TAP::Parser::ResultFactory'=> '3.36_01',
+              'TAP::Parser::Scheduler'=> '3.36_01',
+              'TAP::Parser::Scheduler::Job'=> '3.36_01',
+              'TAP::Parser::Scheduler::Spinner'=> '3.36_01',
+              'TAP::Parser::Source'   => '3.36_01',
+              'TAP::Parser::SourceHandler'=> '3.36_01',
+              'TAP::Parser::SourceHandler::Executable'=> '3.36_01',
+              'TAP::Parser::SourceHandler::File'=> '3.36_01',
+              'TAP::Parser::SourceHandler::Handle'=> '3.36_01',
+              'TAP::Parser::SourceHandler::Perl'=> '3.36_01',
+              'TAP::Parser::SourceHandler::RawTAP'=> '3.36_01',
+              'TAP::Parser::YAMLish::Reader'=> '3.36_01',
+              'TAP::Parser::YAMLish::Writer'=> '3.36_01',
+              'Test'                  => '1.28_01',
+              'Test::Harness'         => '3.36_01',
+              'XSLoader'              => '0.22',
+              'bigint'                => '0.42_01',
+              'bignum'                => '0.42_01',
+              'bigrat'                => '0.42_01',
+          },
+          removed => {
+          }
+      },
+      5.025009 => {
+          delta_from => 5.025008,
+          changed => {
+              'App::Cpan'             => '1.66',
+              'B::Deparse'            => '1.40',
+              'B::Op_private'         => '5.025009',
+              'B::Terse'              => '1.07',
+              'B::Xref'               => '1.06',
+              'CPAN'                  => '2.16',
+              'CPAN::Bundle'          => '5.5002',
+              'CPAN::Distribution'    => '2.16',
+              'CPAN::Exception::RecursiveDependency'=> '5.5001',
+              'CPAN::FTP'             => '5.5008',
+              'CPAN::FirstTime'       => '5.5310',
+              'CPAN::HandleConfig'    => '5.5008',
+              'CPAN::Module'          => '5.5003',
+              'Compress::Raw::Bzip2'  => '2.070',
+              'Compress::Raw::Zlib'   => '2.070',
+              'Config'                => '5.025009',
+              'DB_File'               => '1.840',
+              'Data::Dumper'          => '2.167',
+              'Devel::SelfStubber'    => '1.06',
+              'DynaLoader'            => '1.41',
+              'Errno'                 => '1.28',
+              'ExtUtils::Embed'       => '1.34',
+              'File::Glob'            => '1.28',
+              'I18N::LangTags'        => '0.42',
+              'Module::CoreList'      => '5.20170120',
+              'Module::CoreList::TieHashDelta'=> '5.20170120',
+              'Module::CoreList::Utils'=> '5.20170120',
+              'OS2::Process'          => '1.12',
+              'PerlIO::scalar'        => '0.26',
+              'Pod::Html'             => '1.2202',
+              'Storable'              => '2.61',
+              'Symbol'                => '1.08',
+              'Term::ReadLine'        => '1.16',
+              'Test'                  => '1.30',
+              'Unicode::UCD'          => '0.68',
+              'VMS::DCLsym'           => '1.08',
+              'XS::APItest'           => '0.88',
+              'XSLoader'              => '0.26',
+              'attributes'            => '0.29',
+              'diagnostics'           => '1.36',
+              'feature'               => '1.46',
+              'lib'                   => '0.64',
+              'overload'              => '1.28',
+              're'                    => '0.34',
+              'threads'               => '2.12',
+              'threads::shared'       => '1.54',
+          },
+          removed => {
+          }
+      },
+      5.025010 => {
+          delta_from => 5.025009,
+          changed => {
+              'B'                     => '1.68',
+              'B::Op_private'         => '5.025010',
+              'CPAN'                  => '2.17',
+              'CPAN::Distribution'    => '2.17',
+              'Config'                => '5.02501',
+              'Getopt::Std'           => '1.12',
+              'Module::CoreList'      => '5.20170220',
+              'Module::CoreList::TieHashDelta'=> '5.20170220',
+              'Module::CoreList::Utils'=> '5.20170220',
+              'PerlIO'                => '1.10',
+              'Storable'              => '2.62',
+              'Thread::Queue'         => '3.12',
+              'feature'               => '1.47',
+              'open'                  => '1.11',
+              'threads'               => '2.13',
+          },
+          removed => {
+          }
+      },
+      5.025011 => {
+          delta_from => 5.025010,
+          changed => {
+              'App::Prove'            => '3.38',
+              'App::Prove::State'     => '3.38',
+              'App::Prove::State::Result'=> '3.38',
+              'App::Prove::State::Result::Test'=> '3.38',
+              'B::Op_private'         => '5.025011',
+              'Compress::Raw::Bzip2'  => '2.074',
+              'Compress::Raw::Zlib'   => '2.074',
+              'Compress::Zlib'        => '2.074',
+              'Config'                => '5.025011',
+              'Config::Perl::V'       => '0.28',
+              'Cwd'                   => '3.67',
+              'ExtUtils::ParseXS'     => '3.34',
+              'ExtUtils::ParseXS::Constants'=> '3.34',
+              'ExtUtils::ParseXS::CountLines'=> '3.34',
+              'ExtUtils::ParseXS::Eval'=> '3.34',
+              'ExtUtils::Typemaps'    => '3.34',
+              'ExtUtils::Typemaps::Cmd'=> '3.34',
+              'ExtUtils::Typemaps::InputMap'=> '3.34',
+              'ExtUtils::Typemaps::OutputMap'=> '3.34',
+              'ExtUtils::Typemaps::Type'=> '3.34',
+              'File::Spec'            => '3.67',
+              'File::Spec::AmigaOS'   => '3.67',
+              'File::Spec::Cygwin'    => '3.67',
+              'File::Spec::Epoc'      => '3.67',
+              'File::Spec::Functions' => '3.67',
+              'File::Spec::Mac'       => '3.67',
+              'File::Spec::OS2'       => '3.67',
+              'File::Spec::Unix'      => '3.67',
+              'File::Spec::VMS'       => '3.67',
+              'File::Spec::Win32'     => '3.67',
+              'IO::Compress::Adapter::Bzip2'=> '2.074',
+              'IO::Compress::Adapter::Deflate'=> '2.074',
+              'IO::Compress::Adapter::Identity'=> '2.074',
+              'IO::Compress::Base'    => '2.074',
+              'IO::Compress::Base::Common'=> '2.074',
+              'IO::Compress::Bzip2'   => '2.074',
+              'IO::Compress::Deflate' => '2.074',
+              'IO::Compress::Gzip'    => '2.074',
+              'IO::Compress::Gzip::Constants'=> '2.074',
+              'IO::Compress::RawDeflate'=> '2.074',
+              'IO::Compress::Zip'     => '2.074',
+              'IO::Compress::Zip::Constants'=> '2.074',
+              'IO::Compress::Zlib::Constants'=> '2.074',
+              'IO::Compress::Zlib::Extra'=> '2.074',
+              'IO::Uncompress::Adapter::Bunzip2'=> '2.074',
+              'IO::Uncompress::Adapter::Identity'=> '2.074',
+              'IO::Uncompress::Adapter::Inflate'=> '2.074',
+              'IO::Uncompress::AnyInflate'=> '2.074',
+              'IO::Uncompress::AnyUncompress'=> '2.074',
+              'IO::Uncompress::Base'  => '2.074',
+              'IO::Uncompress::Bunzip2'=> '2.074',
+              'IO::Uncompress::Gunzip'=> '2.074',
+              'IO::Uncompress::Inflate'=> '2.074',
+              'IO::Uncompress::RawInflate'=> '2.074',
+              'IO::Uncompress::Unzip' => '2.074',
+              'Module::CoreList'      => '5.20170320',
+              'Module::CoreList::TieHashDelta'=> '5.20170230',
+              'Module::CoreList::Utils'=> '5.20170320',
+              'Pod::Perldoc'          => '3.28',
+              'Pod::Perldoc::BaseTo'  => '3.28',
+              'Pod::Perldoc::GetOptsOO'=> '3.28',
+              'Pod::Perldoc::ToANSI'  => '3.28',
+              'Pod::Perldoc::ToChecker'=> '3.28',
+              'Pod::Perldoc::ToMan'   => '3.28',
+              'Pod::Perldoc::ToNroff' => '3.28',
+              'Pod::Perldoc::ToPod'   => '3.28',
+              'Pod::Perldoc::ToRtf'   => '3.28',
+              'Pod::Perldoc::ToTerm'  => '3.28',
+              'Pod::Perldoc::ToText'  => '3.28',
+              'Pod::Perldoc::ToTk'    => '3.28',
+              'Pod::Perldoc::ToXml'   => '3.28',
+              'TAP::Base'             => '3.38',
+              'TAP::Formatter::Base'  => '3.38',
+              'TAP::Formatter::Color' => '3.38',
+              'TAP::Formatter::Console'=> '3.38',
+              'TAP::Formatter::Console::ParallelSession'=> '3.38',
+              'TAP::Formatter::Console::Session'=> '3.38',
+              'TAP::Formatter::File'  => '3.38',
+              'TAP::Formatter::File::Session'=> '3.38',
+              'TAP::Formatter::Session'=> '3.38',
+              'TAP::Harness'          => '3.38',
+              'TAP::Harness::Env'     => '3.38',
+              'TAP::Object'           => '3.38',
+              'TAP::Parser'           => '3.38',
+              'TAP::Parser::Aggregator'=> '3.38',
+              'TAP::Parser::Grammar'  => '3.38',
+              'TAP::Parser::Iterator' => '3.38',
+              'TAP::Parser::Iterator::Array'=> '3.38',
+              'TAP::Parser::Iterator::Process'=> '3.38',
+              'TAP::Parser::Iterator::Stream'=> '3.38',
+              'TAP::Parser::IteratorFactory'=> '3.38',
+              'TAP::Parser::Multiplexer'=> '3.38',
+              'TAP::Parser::Result'   => '3.38',
+              'TAP::Parser::Result::Bailout'=> '3.38',
+              'TAP::Parser::Result::Comment'=> '3.38',
+              'TAP::Parser::Result::Plan'=> '3.38',
+              'TAP::Parser::Result::Pragma'=> '3.38',
+              'TAP::Parser::Result::Test'=> '3.38',
+              'TAP::Parser::Result::Unknown'=> '3.38',
+              'TAP::Parser::Result::Version'=> '3.38',
+              'TAP::Parser::Result::YAML'=> '3.38',
+              'TAP::Parser::ResultFactory'=> '3.38',
+              'TAP::Parser::Scheduler'=> '3.38',
+              'TAP::Parser::Scheduler::Job'=> '3.38',
+              'TAP::Parser::Scheduler::Spinner'=> '3.38',
+              'TAP::Parser::Source'   => '3.38',
+              'TAP::Parser::SourceHandler'=> '3.38',
+              'TAP::Parser::SourceHandler::Executable'=> '3.38',
+              'TAP::Parser::SourceHandler::File'=> '3.38',
+              'TAP::Parser::SourceHandler::Handle'=> '3.38',
+              'TAP::Parser::SourceHandler::Perl'=> '3.38',
+              'TAP::Parser::SourceHandler::RawTAP'=> '3.38',
+              'TAP::Parser::YAMLish::Reader'=> '3.38',
+              'TAP::Parser::YAMLish::Writer'=> '3.38',
+              'Test::Harness'         => '3.38',
+              'VMS::Stdio'            => '2.41',
+              'threads'               => '2.15',
+              'threads::shared'       => '1.55',
+          },
+          removed => {
+          }
+      },
+      5.025012 => {
+          delta_from => 5.025011,
+          changed => {
+              'B::Op_private'         => '5.025012',
+              'CPAN'                  => '2.18',
+              'CPAN::Bundle'          => '5.5003',
+              'CPAN::Distribution'    => '2.18',
+              'Config'                => '5.025012',
+              'DynaLoader'            => '1.42',
+              'Module::CoreList'      => '5.20170420',
+              'Module::CoreList::TieHashDelta'=> '5.20170420',
+              'Module::CoreList::Utils'=> '5.20170420',
+              'Safe'                  => '2.40',
+              'XSLoader'              => '0.27',
+              'base'                  => '2.25',
+              'threads::shared'       => '1.56',
+          },
+          removed => {
+          }
+      },
+      5.026000 => {
+          delta_from => 5.025012,
+          changed => {
+              'B::Op_private'         => '5.026000',
+              'Config'                => '5.026',
+              'Module::CoreList'      => '5.20170530',
+              'Module::CoreList::TieHashDelta'=> '5.20170530',
+              'Module::CoreList::Utils'=> '5.20170530',
+          },
+          removed => {
+          }
+      },
   );
   
   sub is_core
@@ -21588,13 +24768,7 @@ $fatpacked{"Module/CoreList.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
       return $perl_version <= $final_release;
   }
   
-  for my $version (sort { $a <=> $b } keys %delta) {
-      my $data = $delta{$version};
-  
-      tie %{$version{$version}}, 'Module::CoreList::TieHashDelta',
-          $data->{changed}, $data->{removed},
-          $data->{delta_from} ? $version{$data->{delta_from}} : undef;
-  }
+  %version = _undelta(\%delta);
   
   %deprecated = (
       5.011    => {
@@ -22202,15 +25376,107 @@ $fatpacked{"Module/CoreList.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
           removed => {
           }
       },
+      5.025002 => {
+          delta_from => 5.025001,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.025003 => {
+          delta_from => 5.025002,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.025004 => {
+          delta_from => 5.025003,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.025005 => {
+          delta_from => 5.025004,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.025006 => {
+          delta_from => 5.025005,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.025007 => {
+          delta_from => 5.025006,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.025008 => {
+          delta_from => 5.025007,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.022003 => {
+          delta_from => 5.022002,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.024001 => {
+          delta_from => 5.024000,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.025009 => {
+          delta_from => 5.025008,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.025010 => {
+          delta_from => 5.025009,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.025011 => {
+          delta_from => 5.025010,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.025012 => {
+          delta_from => 5.025011,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.026000 => {
+          delta_from => 5.025012,
+          changed => {
+          },
+          removed => {
+          }
+      },
   );
   
-  for my $version (sort { $a <=> $b } keys %deprecated) {
-      my $data = $deprecated{$version};
-  
-      tie %{ $deprecated{$version} }, 'Module::CoreList::TieHashDelta',
-          $data->{changed}, $data->{removed},
-          $data->{delta_from} ? $deprecated{ $data->{delta_from} } : undef;
-  }
+  %deprecated = _undelta(\%deprecated);
   
   %upstream = (
       'App::Cpan'             => 'cpan',
@@ -22423,6 +25689,7 @@ $fatpacked{"Module/CoreList.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
       'Math::BigInt::Calc'    => 'cpan',
       'Math::BigInt::CalcEmu' => 'cpan',
       'Math::BigInt::FastCalc'=> 'cpan',
+      'Math::BigInt::Lib'     => 'cpan',
       'Math::BigInt::Trace'   => 'cpan',
       'Math::BigRat'          => 'cpan',
       'Math::Complex'         => 'cpan',
@@ -22573,12 +25840,16 @@ $fatpacked{"Module/CoreList.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
       'Test2::Event'          => 'cpan',
       'Test2::Event::Bail'    => 'cpan',
       'Test2::Event::Diag'    => 'cpan',
+      'Test2::Event::Encoding'=> 'cpan',
       'Test2::Event::Exception'=> 'cpan',
+      'Test2::Event::Generic' => 'cpan',
+      'Test2::Event::Info'    => 'cpan',
       'Test2::Event::Note'    => 'cpan',
       'Test2::Event::Ok'      => 'cpan',
       'Test2::Event::Plan'    => 'cpan',
       'Test2::Event::Skip'    => 'cpan',
       'Test2::Event::Subtest' => 'cpan',
+      'Test2::Event::TAP::Version'=> 'cpan',
       'Test2::Event::Waiting' => 'cpan',
       'Test2::Formatter'      => 'cpan',
       'Test2::Formatter::TAP' => 'cpan',
@@ -22589,6 +25860,7 @@ $fatpacked{"Module/CoreList.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
       'Test2::IPC'            => 'cpan',
       'Test2::IPC::Driver'    => 'cpan',
       'Test2::IPC::Driver::Files'=> 'cpan',
+      'Test2::Tools::Tiny'    => 'cpan',
       'Test2::Util'           => 'cpan',
       'Test2::Util::ExternalMeta'=> 'cpan',
       'Test2::Util::HashBase' => 'cpan',
@@ -22625,7 +25897,6 @@ $fatpacked{"Module/CoreList.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
       'Unicode::Collate::CJK::Stroke'=> 'cpan',
       'Unicode::Collate::CJK::Zhuyin'=> 'cpan',
       'Unicode::Collate::Locale'=> 'cpan',
-      'Unicode::Normalize'    => 'cpan',
       'Win32'                 => 'cpan',
       'Win32API::File'        => 'cpan',
       'Win32API::File::inc::ExtUtils::Myconst2perl'=> 'cpan',
@@ -22858,6 +26129,7 @@ $fatpacked{"Module/CoreList.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
       'Math::BigInt::Calc'    => undef,
       'Math::BigInt::CalcEmu' => undef,
       'Math::BigInt::FastCalc'=> undef,
+      'Math::BigInt::Lib'     => undef,
       'Math::BigInt::Trace'   => undef,
       'Math::BigRat'          => undef,
       'Math::Complex'         => undef,
@@ -22890,7 +26162,7 @@ $fatpacked{"Module/CoreList.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
       'Net::SMTP'             => undef,
       'Net::Time'             => undef,
       'Params::Check'         => undef,
-      'Parse::CPAN::Meta'     => 'https://github.com/Perl-Toolchain-Gang/Parse-CPAN-Meta/issues',
+      'Parse::CPAN::Meta'     => 'https://github.com/Perl-Toolchain-Gang/CPAN-Meta/issues',
       'Perl::OSType'          => 'https://github.com/Perl-Toolchain-Gang/Perl-OSType/issues',
       'PerlIO::via::QuotedPrint'=> undef,
       'Pod::Checker'          => undef,
@@ -23008,12 +26280,16 @@ $fatpacked{"Module/CoreList.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
       'Test2::Event'          => 'http://github.com/Test-More/test-more/issues',
       'Test2::Event::Bail'    => 'http://github.com/Test-More/test-more/issues',
       'Test2::Event::Diag'    => 'http://github.com/Test-More/test-more/issues',
+      'Test2::Event::Encoding'=> 'http://github.com/Test-More/test-more/issues',
       'Test2::Event::Exception'=> 'http://github.com/Test-More/test-more/issues',
+      'Test2::Event::Generic' => 'http://github.com/Test-More/test-more/issues',
+      'Test2::Event::Info'    => 'http://github.com/Test-More/test-more/issues',
       'Test2::Event::Note'    => 'http://github.com/Test-More/test-more/issues',
       'Test2::Event::Ok'      => 'http://github.com/Test-More/test-more/issues',
       'Test2::Event::Plan'    => 'http://github.com/Test-More/test-more/issues',
       'Test2::Event::Skip'    => 'http://github.com/Test-More/test-more/issues',
       'Test2::Event::Subtest' => 'http://github.com/Test-More/test-more/issues',
+      'Test2::Event::TAP::Version'=> 'http://github.com/Test-More/test-more/issues',
       'Test2::Event::Waiting' => 'http://github.com/Test-More/test-more/issues',
       'Test2::Formatter'      => 'http://github.com/Test-More/test-more/issues',
       'Test2::Formatter::TAP' => 'http://github.com/Test-More/test-more/issues',
@@ -23024,6 +26300,7 @@ $fatpacked{"Module/CoreList.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
       'Test2::IPC'            => 'http://github.com/Test-More/test-more/issues',
       'Test2::IPC::Driver'    => 'http://github.com/Test-More/test-more/issues',
       'Test2::IPC::Driver::Files'=> 'http://github.com/Test-More/test-more/issues',
+      'Test2::Tools::Tiny'    => 'http://github.com/Test-More/test-more/issues',
       'Test2::Util'           => 'http://github.com/Test-More/test-more/issues',
       'Test2::Util::ExternalMeta'=> 'http://github.com/Test-More/test-more/issues',
       'Test2::Util::HashBase' => 'http://github.com/Test-More/test-more/issues',
@@ -23048,7 +26325,7 @@ $fatpacked{"Module/CoreList.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
       'Text::Tabs'            => undef,
       'Text::Wrap'            => undef,
       'Tie::RefHash'          => undef,
-      'Time::Local'           => 'http://rt.cpan.org/NoAuth/Bugs.html?Dist=Time-Local',
+      'Time::Local'           => 'https://github.com/houseabsolute/Time-Local/issues',
       'Time::Piece'           => undef,
       'Time::Seconds'         => undef,
       'Unicode::Collate'      => undef,
@@ -23060,7 +26337,6 @@ $fatpacked{"Module/CoreList.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
       'Unicode::Collate::CJK::Stroke'=> undef,
       'Unicode::Collate::CJK::Zhuyin'=> undef,
       'Unicode::Collate::Locale'=> undef,
-      'Unicode::Normalize'    => 'https://rt.cpan.org/Public/Dist/Display.html?Name=Unicode-Normalize',
       'Win32'                 => undef,
       'Win32API::File'        => undef,
       'Win32API::File::inc::ExtUtils::Myconst2perl'=> undef,
@@ -23120,7 +26396,7 @@ $fatpacked{"Module/CoreList/TieHashDelta.pm"} = '#line '.(1+__LINE__).' "'.__FIL
   use strict;
   use vars qw($VERSION);
   
-  $VERSION = '5.20160520';
+  $VERSION = '5.20170530';
   
   sub TIEHASH {
       my ($class, $changed, $removed, $parent) = @_;
@@ -23203,9 +26479,8 @@ $fatpacked{"Module/CoreList/Utils.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"
   use warnings;
   use vars qw[$VERSION %utilities];
   use Module::CoreList;
-  use Module::CoreList::TieHashDelta;
   
-  $VERSION = '5.20160520';
+  $VERSION = '5.20170530';
   
   sub utilities {
       my $perl = shift;
@@ -24363,15 +27638,109 @@ $fatpacked{"Module/CoreList/Utils.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"
           removed => {
           }
       },
+      5.025002 => {
+          delta_from => 5.025001,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.025003 => {
+          delta_from => 5.025002,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.025004 => {
+          delta_from => 5.025003,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.025005 => {
+          delta_from => 5.025004,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.025006 => {
+          delta_from => 5.025005,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.025007 => {
+          delta_from => 5.025006,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.025008 => {
+          delta_from => 5.025007,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.022003 => {
+          delta_from => 5.022002,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.024001 => {
+          delta_from => 5.024000,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.025009 => {
+          delta_from => 5.025008,
+          changed => {
+          },
+          removed => {
+              'c2ph'                  => 1,
+              'pstruct'               => 1,
+          }
+      },
+      5.025010 => {
+          delta_from => 5.025009,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.025011 => {
+          delta_from => 5.025010,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.025012 => {
+          delta_from => 5.025011,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.026000 => {
+          delta_from => 5.025012,
+          changed => {
+          },
+          removed => {
+          }
+      },
   );
   
-  for my $version (sort { $a <=> $b } keys %delta) {
-      my $data = $delta{$version};
-  
-      tie %{$utilities{$version}}, 'Module::CoreList::TieHashDelta',
-          $data->{changed}, $data->{removed},
-          $data->{delta_from} ? $utilities{$data->{delta_from}} : undef;
-  }
+  %utilities = Module::CoreList::_undelta(\%delta);
   
   # Create aliases with trailing zeros for $] use
   
@@ -24507,8 +27876,9 @@ MODULE_CORELIST_UTILS
 
 $fatpacked{"Module/Metadata.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'MODULE_METADATA';
   # -*- mode: cperl; tab-width: 8; indent-tabs-mode: nil; basic-offset: 2 -*-
-  # vim:ts=8:sw=2:et:sta:sts=2
-  package Module::Metadata; # git description: v1.000026-12-g9b12bf1
+  # vim:ts=8:sw=2:et:sta:sts=2:tw=78
+  package Module::Metadata; # git description: v1.000032-7-gb4e8a3f
+  # ABSTRACT: Gather package and POD information from perl module files
   
   # Adapted from Perl-licensed code originally distributed with
   # Module-Build by Ken Williams
@@ -24521,7 +27891,7 @@ $fatpacked{"Module/Metadata.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
   use strict;
   use warnings;
   
-  our $VERSION = '1.000027';
+  our $VERSION = '1.000033';
   
   use Carp qw/croak/;
   use File::Spec;
@@ -24538,7 +27908,8 @@ $fatpacked{"Module/Metadata.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
       Log::Contextual->import('log_info',
         '-default_logger' => Log::Contextual::WarnLogger->new({ env_prefix => 'MODULE_METADATA', }),
       );
-    } else {
+    }
+    else {
       *log_info = sub (&) { warn $_[0]->() };
     }
   }
@@ -24681,10 +28052,12 @@ $fatpacked{"Module/Metadata.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
             if ( defined( $version ) ) {
               if ( $compare_versions->( $version, '!=', $p->{version} ) ) {
                 $err .= "  $p->{file} ($p->{version})\n";
-              } else {
+              }
+              else {
                 # same version declared multiple times, ignore
               }
-            } else {
+            }
+            else {
               $file    = $p->{file};
               $version = $p->{version};
             }
@@ -24750,7 +28123,8 @@ $fatpacked{"Module/Metadata.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
   
       if ( $files ) {
         @files = @$files;
-      } else {
+      }
+      else {
         find( {
           wanted => sub {
             push @files, $_ if -f $_ && /\.pm$/;
@@ -24780,12 +28154,14 @@ $fatpacked{"Module/Metadata.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
           if ( $package eq $prime_package ) {
             if ( exists( $prime{$package} ) ) {
               croak "Unexpected conflict in '$package'; multiple versions found.\n";
-            } else {
+            }
+            else {
               $mapped_filename = "$package.pm" if lc("$package.pm") eq lc($mapped_filename);
               $prime{$package}{file} = $mapped_filename;
               $prime{$package}{version} = $version if defined( $version );
             }
-          } else {
+          }
+          else {
             push( @{$alt{$package}}, {
                                       file    => $mapped_filename,
                                       version => $version,
@@ -24812,7 +28188,8 @@ $fatpacked{"Module/Metadata.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
               $result->{err}
             };
   
-          } elsif ( defined( $result->{version} ) ) {
+          }
+          elsif ( defined( $result->{version} ) ) {
           # There is a primary package selected, and exactly one
           # alternative package
   
@@ -24832,19 +28209,22 @@ $fatpacked{"Module/Metadata.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
               };
             }
   
-          } else {
+          }
+          else {
             # The prime package selected has no version so, we choose to
             # use any alternative package that does have a version
             $prime{$package}{file}    = $result->{file};
             $prime{$package}{version} = $result->{version};
           }
   
-          } else {
+          }
+          else {
           # no alt package found with a version, but we have a prime
           # package so we use it whether it has a version or not
           }
   
-        } else { # No primary package was selected, use the best alternative
+        }
+        else { # No primary package was selected, use the best alternative
   
           if ( $result->{err} ) {
             log_info {
@@ -24908,25 +28288,34 @@ $fatpacked{"Module/Metadata.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
     }
     $self->_parse_fh($handle);
   
+    @{$self->{packages}} = __uniq(@{$self->{packages}});
+  
     unless($self->{module} and length($self->{module})) {
-      my ($v, $d, $f) = File::Spec->splitpath($self->{filename});
-      if($f =~ /\.pm$/) {
+      # CAVEAT (possible TODO): .pmc files not treated the same as .pm
+      if ($self->{filename} =~ /\.pm$/) {
+        my ($v, $d, $f) = File::Spec->splitpath($self->{filename});
         $f =~ s/\..+$//;
-        my @candidates = grep /$f$/, @{$self->{packages}};
-        $self->{module} = shift(@candidates); # punt
+        my @candidates = grep /(^|::)$f$/, @{$self->{packages}};
+        $self->{module} = shift(@candidates); # this may be undef
       }
       else {
-        if(grep /main/, @{$self->{packages}}) {
+        # this seems like an atrocious heuristic, albeit marginally better than
+        # what was here before. It should be rewritten entirely to be more like
+        # "if it's not a .pm file, it's not require()able as a name, therefore
+        # name() should be undef."
+        if ((grep /main/, @{$self->{packages}})
+            or (grep /main/, keys %{$self->{versions}})) {
           $self->{module} = 'main';
         }
         else {
+          # TODO: this should maybe default to undef instead
           $self->{module} = $self->{packages}[0] || '';
         }
       }
     }
   
     $self->{version} = $self->{versions}{$self->{module}}
-        if defined( $self->{module} );
+      if defined( $self->{module} );
   
     return $self;
   }
@@ -24942,6 +28331,7 @@ $fatpacked{"Module/Metadata.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
       my $testfile = File::Spec->catfile($dir, $file);
       return [ File::Spec->rel2abs( $testfile ), $dir ]
         if -e $testfile and !-d _;  # For stuff like ExtUtils::xsubpp
+      # CAVEAT (possible TODO): .pmc files are not discoverable here
       $testfile .= '.pm';
       return [ File::Spec->rel2abs( $testfile ), $dir ]
         if -e $testfile;
@@ -24995,9 +28385,11 @@ $fatpacked{"Module/Metadata.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
     my $encoding;
     if ( $buf eq "\x{FE}\x{FF}" ) {
       $encoding = 'UTF-16BE';
-    } elsif ( $buf eq "\x{FF}\x{FE}" ) {
+    }
+    elsif ( $buf eq "\x{FF}\x{FE}" ) {
       $encoding = 'UTF-16LE';
-    } elsif ( $buf eq "\x{EF}\x{BB}" ) {
+    }
+    elsif ( $buf eq "\x{EF}\x{BB}" ) {
       $buf = ' ';
       $count = read $fh, $buf, length $buf;
       if ( defined $count and $count >= 1 and $buf eq "\x{BF}" ) {
@@ -25009,7 +28401,8 @@ $fatpacked{"Module/Metadata.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
       if ( "$]" >= 5.008 ) {
         binmode( $fh, ":encoding($encoding)" );
       }
-    } else {
+    }
+    else {
       seek $fh, $pos, SEEK_SET
         or croak( sprintf "Can't reset position to the top of '$filename'" );
     }
@@ -25052,88 +28445,91 @@ $fatpacked{"Module/Metadata.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
             $pod_data = '';
           }
           $pod_sect = $1;
-  
-        } elsif ( $self->{collect_pod} ) {
-          $pod_data .= "$line\n";
-  
         }
-  
-      } elsif ( $is_cut ) {
-  
+        elsif ( $self->{collect_pod} ) {
+          $pod_data .= "$line\n";
+        }
+        next;
+      }
+      elsif ( $is_cut ) {
         if ( $self->{collect_pod} && length( $pod_data ) ) {
           $pod{$pod_sect} = $pod_data;
           $pod_data = '';
         }
         $pod_sect = '';
+        next;
+      }
   
-      } else {
+      # Skip after __END__
+      next if $in_end;
   
-        # Skip after __END__
-        next if $in_end;
+      # Skip comments in code
+      next if $line =~ /^\s*#/;
   
-        # Skip comments in code
-        next if $line =~ /^\s*#/;
+      # Would be nice if we could also check $in_string or something too
+      if ($line eq '__END__') {
+        $in_end++;
+        next;
+      }
   
-        # Would be nice if we could also check $in_string or something too
-        if ($line eq '__END__') {
-          $in_end++;
-          next;
-        }
-        last if $line eq '__DATA__';
+      last if $line eq '__DATA__';
   
-        # parse $line to see if it's a $VERSION declaration
-        my( $version_sigil, $version_fullname, $version_package ) =
-            index($line, 'VERSION') >= 1
-                ? $self->_parse_version_expression( $line )
-                : ();
+      # parse $line to see if it's a $VERSION declaration
+      my( $version_sigil, $version_fullname, $version_package ) =
+        index($line, 'VERSION') >= 1
+          ? $self->_parse_version_expression( $line )
+          : ();
   
-        if ( $line =~ /$PKG_REGEXP/o ) {
-          $package = $1;
-          my $version = $2;
-          push( @packages, $package ) unless grep( $package eq $_, @packages );
-          $need_vers = defined $version ? 0 : 1;
+      if ( $line =~ /$PKG_REGEXP/o ) {
+        $package = $1;
+        my $version = $2;
+        push( @packages, $package ) unless grep( $package eq $_, @packages );
+        $need_vers = defined $version ? 0 : 1;
   
-          if ( not exists $vers{$package} and defined $version ){
-            # Upgrade to a version object.
-            my $dwim_version = eval { _dwim_version($version) };
-            croak "Version '$version' from $self->{filename} does not appear to be valid:\n$line\n\nThe fatal error was: $@\n"
-                unless defined $dwim_version;  # "0" is OK!
-            $vers{$package} = $dwim_version;
-          }
-  
-        # VERSION defined with full package spec, i.e. $Module::VERSION
-        } elsif ( $version_fullname && $version_package ) {
-          push( @packages, $version_package ) unless grep( $version_package eq $_, @packages );
-          $need_vers = 0 if $version_package eq $package;
-  
-          unless ( defined $vers{$version_package} && length $vers{$version_package} ) {
-          $vers{$version_package} = $self->_evaluate_version_line( $version_sigil, $version_fullname, $line );
-        }
-  
-        # first non-comment line in undeclared package main is VERSION
-        } elsif ( $package eq 'main' && $version_fullname && !exists($vers{main}) ) {
-          $need_vers = 0;
-          my $v = $self->_evaluate_version_line( $version_sigil, $version_fullname, $line );
-          $vers{$package} = $v;
-          push( @packages, 'main' );
-  
-        # first non-comment line in undeclared package defines package main
-        } elsif ( $package eq 'main' && !exists($vers{main}) && $line =~ /\w/ ) {
-          $need_vers = 1;
-          $vers{main} = '';
-          push( @packages, 'main' );
-  
-        # only keep if this is the first $VERSION seen
-        } elsif ( $version_fullname && $need_vers ) {
-          $need_vers = 0;
-          my $v = $self->_evaluate_version_line( $version_sigil, $version_fullname, $line );
-  
-          unless ( defined $vers{$package} && length $vers{$package} ) {
-            $vers{$package} = $v;
-          }
+        if ( not exists $vers{$package} and defined $version ){
+          # Upgrade to a version object.
+          my $dwim_version = eval { _dwim_version($version) };
+          croak "Version '$version' from $self->{filename} does not appear to be valid:\n$line\n\nThe fatal error was: $@\n"
+            unless defined $dwim_version;  # "0" is OK!
+          $vers{$package} = $dwim_version;
         }
       }
-    }
+  
+      # VERSION defined with full package spec, i.e. $Module::VERSION
+      elsif ( $version_fullname && $version_package ) {
+        # we do NOT save this package in found @packages
+        $need_vers = 0 if $version_package eq $package;
+  
+        unless ( defined $vers{$version_package} && length $vers{$version_package} ) {
+          $vers{$version_package} = $self->_evaluate_version_line( $version_sigil, $version_fullname, $line );
+        }
+      }
+  
+      # first non-comment line in undeclared package main is VERSION
+      elsif ( $package eq 'main' && $version_fullname && !exists($vers{main}) ) {
+        $need_vers = 0;
+        my $v = $self->_evaluate_version_line( $version_sigil, $version_fullname, $line );
+        $vers{$package} = $v;
+        push( @packages, 'main' );
+      }
+  
+      # first non-comment line in undeclared package defines package main
+      elsif ( $package eq 'main' && !exists($vers{main}) && $line =~ /\w/ ) {
+        $need_vers = 1;
+        $vers{main} = '';
+        push( @packages, 'main' );
+      }
+  
+      # only keep if this is the first $VERSION seen
+      elsif ( $version_fullname && $need_vers ) {
+        $need_vers = 0;
+        my $v = $self->_evaluate_version_line( $version_sigil, $version_fullname, $line );
+  
+        unless ( defined $vers{$package} && length $vers{$package} ) {
+          $vers{$package} = $v;
+        }
+      }
+    } # end loop over each line
   
     if ( $self->{collect_pod} && length($pod_data) ) {
       $pod{$pod_sect} = $pod_data;
@@ -25143,6 +28539,12 @@ $fatpacked{"Module/Metadata.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
     $self->{packages} = \@packages;
     $self->{pod} = \%pod;
     $self->{pod_headings} = \@pod;
+  }
+  
+  sub __uniq (@)
+  {
+      my (%seen, $key);
+      grep { not $seen{ $key = $_ }++ } @_;
   }
   
   {
@@ -25160,7 +28562,8 @@ $fatpacked{"Module/Metadata.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
       sub {
         local $sigil$variable_name;
         $line;
-        \$$variable_name
+        return \$$variable_name if defined \$$variable_name;
+        return \$Module::Metadata::_version::p${pn}::$variable_name;
       };
     };
   
@@ -25271,7 +28674,8 @@ $fatpacked{"Module/Metadata.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
       if ( defined( $mod ) && length( $mod ) &&
            exists( $self->{versions}{$mod} ) ) {
           return $self->{versions}{$mod};
-      } else {
+      }
+      else {
           return undef;
       }
   }
@@ -25282,7 +28686,8 @@ $fatpacked{"Module/Metadata.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
       if ( defined( $sect ) && length( $sect ) &&
            exists( $self->{pod}{$sect} ) ) {
           return $self->{pod}{$sect};
-      } else {
+      }
+      else {
           return undef;
       }
   }
@@ -25301,9 +28706,19 @@ $fatpacked{"Module/Metadata.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
   
   1;
   
+  __END__
+  
+  =pod
+  
+  =encoding UTF-8
+  
   =head1 NAME
   
   Module::Metadata - Gather package and POD information from perl module files
+  
+  =head1 VERSION
+  
+  version 1.000033
   
   =head1 SYNOPSIS
   
@@ -25504,10 +28919,23 @@ $fatpacked{"Module/Metadata.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
   
   =head2 C<< is_indexable($package) >> or C<< is_indexable() >>
   
+  Available since version 1.000020.
+  
   Returns a boolean indicating whether the package (if provided) or any package
   (otherwise) is eligible for indexing by PAUSE, the Perl Authors Upload Server.
   Note This only checks for valid C<package> declarations, and does not take any
   ownership information into account.
+  
+  =head1 SUPPORT
+  
+  Bugs may be submitted through L<the RT bug tracker|https://rt.cpan.org/Public/Dist/Display.html?Name=Module-Metadata>
+  (or L<bug-Module-Metadata@rt.cpan.org|mailto:bug-Module-Metadata@rt.cpan.org>).
+  
+  There is also a mailing list available for users of this distribution, at
+  L<http://lists.perl.org/list/cpan-workers.html>.
+  
+  There is also an irc channel available for users of this distribution, at
+  L<C<#toolchain> on C<irc.perl.org>|irc://irc.perl.org/#toolchain>.
   
   =head1 AUTHOR
   
@@ -25516,6 +28944,106 @@ $fatpacked{"Module/Metadata.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
   
   Released as Module::Metadata by Matt S Trout (mst) <mst@shadowcat.co.uk> with
   assistance from David Golden (xdg) <dagolden@cpan.org>.
+  
+  =head1 CONTRIBUTORS
+  
+  =for stopwords Karen Etheridge David Golden Vincent Pit Matt S Trout Chris Nehren Graham Knop Olivier Mengué Tomas Doran Tatsuhiko Miyagawa tokuhirom Kent Fredric Peter Rabbitson Steve Hay Jerry D. Hedden Craig A. Berry Mitchell Steinbrunner Edward Zborowski Gareth Harper James Raspass 'BinGOs' Williams Josh Jore
+  
+  =over 4
+  
+  =item *
+  
+  Karen Etheridge <ether@cpan.org>
+  
+  =item *
+  
+  David Golden <dagolden@cpan.org>
+  
+  =item *
+  
+  Vincent Pit <perl@profvince.com>
+  
+  =item *
+  
+  Matt S Trout <mst@shadowcat.co.uk>
+  
+  =item *
+  
+  Chris Nehren <apeiron@cpan.org>
+  
+  =item *
+  
+  Graham Knop <haarg@haarg.org>
+  
+  =item *
+  
+  Olivier Mengué <dolmen@cpan.org>
+  
+  =item *
+  
+  Tomas Doran <bobtfish@bobtfish.net>
+  
+  =item *
+  
+  Tatsuhiko Miyagawa <miyagawa@bulknews.net>
+  
+  =item *
+  
+  tokuhirom <tokuhirom@gmail.com>
+  
+  =item *
+  
+  Kent Fredric <kentnl@cpan.org>
+  
+  =item *
+  
+  Peter Rabbitson <ribasushi@cpan.org>
+  
+  =item *
+  
+  Steve Hay <steve.m.hay@googlemail.com>
+  
+  =item *
+  
+  Jerry D. Hedden <jdhedden@cpan.org>
+  
+  =item *
+  
+  Craig A. Berry <cberry@cpan.org>
+  
+  =item *
+  
+  Craig A. Berry <craigberry@mac.com>
+  
+  =item *
+  
+  David Mitchell <davem@iabyn.com>
+  
+  =item *
+  
+  David Steinbrunner <dsteinbrunner@pobox.com>
+  
+  =item *
+  
+  Edward Zborowski <ed@rubensteintech.com>
+  
+  =item *
+  
+  Gareth Harper <gareth@broadbean.com>
+  
+  =item *
+  
+  James Raspass <jraspass@gmail.com>
+  
+  =item *
+  
+  Chris 'BinGOs' Williams <chris@bingosnet.co.uk>
+  
+  =item *
+  
+  Josh Jore <jjore@cpan.org>
+  
+  =back
   
   =head1 COPYRIGHT & LICENSE
   
@@ -25542,7 +29070,7 @@ $fatpacked{"version.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'VERSION
   
   use vars qw(@ISA $VERSION $CLASS $STRICT $LAX *declare *qv);
   
-  $VERSION = 0.9917;
+  $VERSION = 0.9918;
   $CLASS = 'version';
   
   # !!!!Delete this next block completely when adding to Perl core!!!!
@@ -25596,7 +29124,11 @@ $fatpacked{"version.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'VERSION
   *version::is_lax = \&version::regex::is_lax;
   *version::is_strict = \&version::regex::is_strict;
   *LAX = \$version::regex::LAX;
+  *LAX_DECIMAL_VERSION = \$version::regex::LAX_DECIMAL_VERSION;
+  *LAX_DOTTED_DECIMAL_VERSION = \$version::regex::LAX_DOTTED_DECIMAL_VERSION;
   *STRICT = \$version::regex::STRICT;
+  *STRICT_DECIMAL_VERSION = \$version::regex::STRICT_DECIMAL_VERSION;
+  *STRICT_DOTTED_DECIMAL_VERSION = \$version::regex::STRICT_DOTTED_DECIMAL_VERSION;
   
   sub import {
       no strict 'refs';
@@ -25665,9 +29197,13 @@ $fatpacked{"version/regex.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'V
   
   use strict;
   
-  use vars qw($VERSION $CLASS $STRICT $LAX);
+  use vars qw(
+      $VERSION $CLASS $STRICT $LAX
+      $STRICT_DECIMAL_VERSION $STRICT_DOTTED_DECIMAL_VERSION
+      $LAX_DECIMAL_VERSION $LAX_DOTTED_DECIMAL_VERSION
+  );
   
-  $VERSION = 0.9917;
+  $VERSION = 0.9918;
   
   #--------------------------------------------------------------------------#
   # Version regexp components
@@ -25720,13 +29256,13 @@ $fatpacked{"version/regex.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'V
   
   # Strict decimal version number.
   
-  my $STRICT_DECIMAL_VERSION =
+  $STRICT_DECIMAL_VERSION =
       qr/ $STRICT_INTEGER_PART $FRACTION_PART? /x;
   
   # Strict dotted-decimal version number.  Must have both leading "v" and
   # at least three parts, to avoid confusion with decimal syntax.
   
-  my $STRICT_DOTTED_DECIMAL_VERSION =
+  $STRICT_DOTTED_DECIMAL_VERSION =
       qr/ v $STRICT_INTEGER_PART $STRICT_DOTTED_DECIMAL_PART{2,} /x;
   
   # Complete strict version number syntax -- should generally be used
@@ -25743,7 +29279,7 @@ $fatpacked{"version/regex.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'V
   # allowing an alpha suffix or allowing a leading or trailing
   # decimal-point
   
-  my $LAX_DECIMAL_VERSION =
+  $LAX_DECIMAL_VERSION =
       qr/ $LAX_INTEGER_PART (?: $FRACTION_PART | \. )? $LAX_ALPHA_PART?
   	|
   	$FRACTION_PART $LAX_ALPHA_PART?
@@ -25755,7 +29291,7 @@ $fatpacked{"version/regex.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'V
   # enough, without the leading "v", Perl takes .1.2 to mean v0.1.2,
   # so when there is no "v", the leading part is optional
   
-  my $LAX_DOTTED_DECIMAL_VERSION =
+  $LAX_DOTTED_DECIMAL_VERSION =
       qr/
   	v $LAX_INTEGER_PART (?: $LAX_DOTTED_DECIMAL_PART+ $LAX_ALPHA_PART? )?
   	|
@@ -25906,7 +29442,7 @@ $fatpacked{"version/vpp.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'VER
   
   use Config;
   use vars qw($VERSION $CLASS @ISA $LAX $STRICT $WARN_CATEGORY);
-  $VERSION = 0.9917;
+  $VERSION = 0.9918;
   $CLASS = 'version::vpp';
   if ($] > 5.015) {
       warnings::register_categories(qw/version/);

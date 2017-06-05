@@ -25,7 +25,9 @@ my @ignored_package = qw{
     };
 
 my %handled_packages = map { ($_ => 1) } qw{
+    File/Which
     HTTP/Tiny
+    IPC/System/Simple
     JSON/MaybeXS
     JSON/PP
     Memoize
