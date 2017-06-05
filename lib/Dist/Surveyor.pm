@@ -80,7 +80,7 @@ A hash-ref, with a list of irregular named releases. i.e. 'libwww-perl' => 'LWP'
 $search_dirs is an array-ref containing the list of directories to survey.
 
 Returns a list, where each element is a hashref representing one installed distibution.
-This hashref is what MetaCPAN returns for http://api.metacpan.org/v0/release/$author/$release,
+This hashref is what MetaCPAN returns for C<https://fastapi.metacpan.org/v1/release/$author/$release>,
 with two additional keys: 
 
 =over
