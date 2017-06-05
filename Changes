@@ -1,6 +1,9 @@
 Revision history for Dist-Surveyor
 
 {{$NEXT}}
+0.018
+	- Add --version option to dist_surveyor script
+	- Send a better user-agent string with HTTP requests
 
 0.017     2017-06-05 15:36:07-04:00 America/New_York
 	- Use MetaCPAN v1 API
