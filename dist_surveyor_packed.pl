@@ -296,7 +296,7 @@ $fatpacked{"Dist/Surveyor.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'D
   $search_dirs is an array-ref containing the list of directories to survey.
   
   Returns a list, where each element is a hashref representing one installed distibution.
-  This hashref is what MetaCPAN returns for http://api.metacpan.org/v0/release/$author/$release,
+  This hashref is what MetaCPAN returns for C<https://fastapi.metacpan.org/v1/release/$author/$release>,
   with two additional keys: 
   
   =over
@@ -999,7 +999,7 @@ $fatpacked{"Dist/Surveyor/Inquiry.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"
       get_release_info('SEMUELF', 'Dist-Surveyor-0.009')
   
   Returns a hashref containing all that release meta information, returned by
-  http://api.metacpan.org/v0/release/$author/$release
+  C<https://fastapi.metacpan.org/v1/release/$author/$release>
   (but not information on the files inside the module)
   
   Dies on HTTP error, and warns on empty response.
@@ -1009,7 +1009,7 @@ $fatpacked{"Dist/Surveyor/Inquiry.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"
   sub get_release_info {
       my ($author, $release) = @_;
       $metacpan_calls++;
-      my $response = $ua->get("http://api.metacpan.org/v0/release/$author/$release");
+      my $response = $ua->get("https://fastapi.metacpan.org/v1/release/$author/$release");
       die "$response->{status} $response->{reason}" unless $response->{success};
       my $release_data = decode_json $response->{content};
       if (!$release_data) {
@@ -1053,10 +1053,10 @@ $fatpacked{"Dist/Surveyor/Inquiry.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"
       my $version_qual = _prepare_version_query(0, $version);
   
       my @and_quals = (
-          {"term" => {"file.module.name" => $module }},
-          (@$version_qual > 1 ? { "or" => $version_qual } : $version_qual->[0]),
+          {"term" => {"module.name" => $module }},
+          (@$version_qual > 1 ? { "bool" => { "should" => $version_qual } } : $version_qual->[0]),
       );
-      push @and_quals, {"term" => {"file.stat.size" => $file_size }}
+      push @and_quals, {"term" => {"stat.size" => $file_size }}
           if $file_size;
   
       # XXX doesn't cope with odd cases like 
@@ -1065,18 +1065,17 @@ $fatpacked{"Dist/Surveyor/Inquiry.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"
   
       my $query = {
           "size" => $metacpan_size,
-          "query" =>  { "filtered" => {
-              "filter" => {"and" => \@and_quals },
-              "query" => {"match_all" => {}},
+          "query" =>  { "bool" => {
+              "filter" => \@and_quals,
           }},
           "fields" => [qw(
-              release _parent author version version_numified file.module.version 
-              file.module.version_numified date stat.mtime distribution file.path
+              release _parent author version version_numified module.version 
+              module.version_numified date stat.mtime distribution path
               )]
       };
   
       my $response = $ua->post(
-          'http://api.metacpan.org/v0/file', {
+          'https://fastapi.metacpan.org/v1/file', {
               headers => { 'Content-Type' => 'application/json;charset=UTF-8' },
               content => JSON->new->utf8->canonical->encode($query),
           }
@@ -1106,23 +1105,22 @@ $fatpacked{"Dist/Surveyor/Inquiry.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"
   
       my @and_quals = (
           {"term" => {"distribution" => $distname }},
-          (@$version_qual > 1 ? { "or" => $version_qual } : $version_qual->[0]),
+          (@$version_qual > 1 ? { "bool" => { "should" => $version_qual } } : $version_qual->[0]),
       );
   
       # XXX doesn't cope with odd cases like 
       $metacpan_calls++;
       my $query = {
           "size" => $metacpan_size,
-          "query" =>  { "filtered" => {
-              "filter" => {"and" => \@and_quals },
-              "query" => {"match_all" => {}},
+          "query" =>  { "bool" => {
+              "filter" => \@and_quals,
           }},
           "fields" => [qw(
-              release _parent author version version_numified file.module.version 
-              file.module.version_numified date stat.mtime distribution file.path)]
+              release _parent author version version_numified module.version 
+              module.version_numified date stat.mtime distribution path)]
       };
       my $response = $ua->post(
-          'http://api.metacpan.org/v0/file', {
+          'https://fastapi.metacpan.org/v1/file', {
               headers => { 'Content-Type' => 'application/json;charset=UTF-8' },
               content => JSON->new->utf8->canonical->encode($query),
           }
@@ -1137,7 +1135,7 @@ $fatpacked{"Dist/Surveyor/Inquiry.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"
       my ($v_key, $num_key) = 
           $is_fallback 
           ? qw{ version version_numified } 
-          : qw{ file.module.version file.module.version_numified };
+          : qw{ module.version module.version_numified };
   
       # timbunce: So, the current situation is that: version_numified is a float
       # holding version->parse($raw_version)->numify, and version is a string
@@ -1215,18 +1213,18 @@ $fatpacked{"Dist/Surveyor/Inquiry.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"
       my $results = eval { 
           my $query = {
               "size" => $metacpan_size,
-              "query" =>  { "filtered" => {
-                  "filter" => {"and" => [
+              "query" =>  { "bool" => {
+                  "filter" => [
                       {"term" => {"release" => $release }},
                       {"term" => {"author" => $author }},
                       {"term" => {"mime" => "text/x-script.perl-module"}},
-                  ]},
-                  "query" => {"match_all" => {}},
+                  ],
               }},
-              "fields" => ["path","name","_source.module", "_source.stat.size"],
+              "fields" => ["path","name","stat.size"],
+              "inner_hits" => {"module" => {"path" => {"module" => {}}}},
           }; 
           my $response = $ua->post(
-              'http://api.metacpan.org/v0/file', {
+              'https://fastapi.metacpan.org/v1/file', {
                   headers => { 'Content-Type' => 'application/json;charset=UTF-8' },
                   content => JSON->new->utf8->canonical->encode($query),
               }
@@ -1254,10 +1252,11 @@ $fatpacked{"Dist/Surveyor/Inquiry.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"
               next;
           }
   
-          my $size = $hit->{fields}{"_source.stat.size"};
+          my $size = $hit->{fields}{"stat.size"};
           # files can contain more than one package ('module')
-          my $rel_mods = $hit->{fields}{"_source.module"} || [];
-          for my $mod (@$rel_mods) { # actually packages in the file
+          my $rel_mods = $hit->{inner_hits}{module}{hits}{hits} || [];
+          for my $inner_hit (@$rel_mods) { # actually packages in the file
+              my $mod = $inner_hit->{_source};
   
               # Some files may contain multiple packages. We want to ignore
               # all except the one that matches the name of the file.

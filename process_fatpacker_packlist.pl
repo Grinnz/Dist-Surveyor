@@ -15,8 +15,10 @@ my @ignored_package = qw{
     Encode/Locale 
     HTTP/Date 
     HTTP/Message 
+    IO/Socket/SSL
     JSON/XS 
     List/Util
+    Net/SSLeay
     Storable
     Types/Serialiser
     URI 
