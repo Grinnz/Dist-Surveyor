@@ -1,6 +1,8 @@
 Revision history for Dist-Surveyor
 
 {{$NEXT}}
+
+0.017     2017-06-05 15:36:07-04:00 America/New_York
 	- Use MetaCPAN v1 API
 	- Add wget and curl fallback when IO::Socket::SSL is not available for fatpacked script
 
