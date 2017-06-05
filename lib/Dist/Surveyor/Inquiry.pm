@@ -12,6 +12,8 @@ use Scalar::Util qw(looks_like_number); # core
 use Data::Dumper;
 use version;
 
+our $VERSION = '0.018';
+
 =head1 NAME
 
 Dist::Surveyor::Inquiry - Handling the meta-cpan API access for Dist::Surveyor
