@@ -276,7 +276,7 @@ sub get_candidate_cpan_dist_releases_fallback {
             release _parent author version version_numified module.version 
             module.version_numified date stat.mtime distribution path)]
     };
-    my $response = _https_request('https://fastapi.metacpan.org/v1/file',
+    my $response = _https_request(POST => 'https://fastapi.metacpan.org/v1/file',
         { 'Content-Type' => 'application/json;charset=UTF-8' },
         JSON->new->utf8->canonical->encode($query),
     );
