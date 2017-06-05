@@ -138,7 +138,7 @@ sub add_release {
     }
 
     my $mirror_status;
-    my $ua = HTTP::Tiny->new;
+    my $ua = HTTP::Tiny->new(agent => "dist_surveyor/$VERSION");
     for my $url (@urls) {
         $mirror_status = $ua->mirror($url, $destfile);
         last if $mirror_status->{success};

@@ -254,6 +254,8 @@ $fatpacked{"Dist/Surveyor.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'D
   use Module::CoreList;
   use Module::Metadata;
   
+  our $VERSION = '0.018';
+  
   use constant ON_WIN32 => $^O eq 'MSWin32';
   use constant ON_VMS   => $^O eq 'VMS';
   
@@ -844,6 +846,8 @@ $fatpacked{"Dist/Surveyor/DB_File.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"
   use warnings;
   use Storable qw(freeze thaw);
   
+  our $VERSION = '0.018';
+  
   our @ISA;
   if    (eval { require DB_File;   1; }) {
       @ISA = ('DB_File');
@@ -887,6 +891,8 @@ $fatpacked{"Dist/Surveyor/Inquiry.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"
   use Scalar::Util qw(looks_like_number); # core
   use Data::Dumper;
   use version;
+  
+  our $VERSION = '0.018';
   
   =head1 NAME
   
@@ -941,10 +947,12 @@ $fatpacked{"Dist/Surveyor/Inquiry.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"
       get_release_info
   };
   
+  my $agent_string = "dist_surveyor/$VERSION";
+  
   my ($ua, $wget, $curl);
   if (HTTP::Tiny->can_ssl) {
       $ua = HTTP::Tiny->new(
-          agent => $0,
+          agent => $agent_string,
           timeout => 10,
           keep_alive => 1, 
       );
@@ -970,12 +978,12 @@ $fatpacked{"Dist/Surveyor/Inquiry.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"
           }
           return $response->{content};
       } elsif (defined $wget) {
-          my @args = ('-q', '-O', '-', '-U', $0, '-T', 10, '--method', $method);
+          my @args = ('-q', '-O', '-', '-U', $agent_string, '-T', 10, '--method', $method);
           push @args, '--header', "$_: $headers->{$_}" for keys %$headers;
           push @args, '--body-data', $content if defined $content;
           return IPC::System::Simple::capturex($wget, @args, $url);
       } elsif (defined $curl) {
-          my @args = ('-s', '-S', '-L', '-A', $0, '--connect-timeout', 10, '-X', $method);
+          my @args = ('-s', '-S', '-L', '-A', $agent_string, '--connect-timeout', 10, '-X', $method);
           push @args, '-H', "$_: $headers->{$_}" for keys %$headers;
           push @args, '--data-raw', $content if defined $content;
           return IPC::System::Simple::capturex($curl, @args, $url);
@@ -1350,6 +1358,8 @@ $fatpacked{"Dist/Surveyor/MakeCpan.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\
   use Dist::Surveyor::Inquiry;
   use List::Util qw(max); # core
   
+  our $VERSION = '0.018';
+  
   our $verbose;
   *verbose = \$::VERBOSE;
   
@@ -1475,7 +1485,7 @@ $fatpacked{"Dist/Surveyor/MakeCpan.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\
       }
   
       my $mirror_status;
-      my $ua = HTTP::Tiny->new;
+      my $ua = HTTP::Tiny->new(agent => "dist_surveyor/$VERSION");
       for my $url (@urls) {
           $mirror_status = $ua->mirror($url, $destfile);
           last if $mirror_status->{success};
@@ -30503,7 +30513,7 @@ Probably.
 
 use strict;
 use warnings;
-use Getopt::Long; # core
+use Getopt::Long qw(:config auto_version); # core
 use Config; # core
 
 $| = 1;
@@ -30511,6 +30521,8 @@ $| = 1;
 use Dist::Surveyor;
 use Dist::Surveyor::Inquiry; # internal
 use Dist::Surveyor::MakeCpan;
+
+our $VERSION = '0.018';
 
 use constant PROGNAME => 'dist_surveyor';
 

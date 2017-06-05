@@ -67,10 +67,12 @@ our @EXPORT = qw{
     get_release_info
 };
 
+my $agent_string = "dist_surveyor/$VERSION";
+
 my ($ua, $wget, $curl);
 if (HTTP::Tiny->can_ssl) {
     $ua = HTTP::Tiny->new(
-        agent => $0,
+        agent => $agent_string,
         timeout => 10,
         keep_alive => 1, 
     );
@@ -96,12 +98,12 @@ sub _https_request {
         }
         return $response->{content};
     } elsif (defined $wget) {
-        my @args = ('-q', '-O', '-', '-U', $0, '-T', 10, '--method', $method);
+        my @args = ('-q', '-O', '-', '-U', $agent_string, '-T', 10, '--method', $method);
         push @args, '--header', "$_: $headers->{$_}" for keys %$headers;
         push @args, '--body-data', $content if defined $content;
         return IPC::System::Simple::capturex($wget, @args, $url);
     } elsif (defined $curl) {
-        my @args = ('-s', '-S', '-L', '-A', $0, '--connect-timeout', 10, '-X', $method);
+        my @args = ('-s', '-S', '-L', '-A', $agent_string, '--connect-timeout', 10, '-X', $method);
         push @args, '-H', "$_: $headers->{$_}" for keys %$headers;
         push @args, '--data-raw', $content if defined $content;
         return IPC::System::Simple::capturex($curl, @args, $url);
