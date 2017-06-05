@@ -1,6 +1,8 @@
 Revision history for Dist-Surveyor
 
 {{$NEXT}}
+    - Use MetaCPAN v1 API
+    - Add wget and curl fallback when IO::Socket::SSL is not available for fatpacked script
 
 0.016     2016-06-15 23:03:13-04:00 America/New_York
 	- Use Test::RequiresInternet in test files
