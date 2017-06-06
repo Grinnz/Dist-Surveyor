@@ -1,6 +1,8 @@
 Revision history for Dist-Surveyor
 
 {{$NEXT}}
+
+0.018     2017-06-06 12:52:16-04:00 America/New_York
 	- Add --version option to dist_surveyor script
 	- Send a better user-agent string with HTTP requests
 

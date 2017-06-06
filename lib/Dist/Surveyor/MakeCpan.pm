@@ -11,7 +11,7 @@ use HTTP::Tiny;
 use Dist::Surveyor::Inquiry;
 use List::Util qw(max); # core
 
-our $VERSION = '0.018';
+our $VERSION = '0.019';
 
 our $verbose;
 *verbose = \$::VERBOSE;
