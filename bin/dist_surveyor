@@ -167,7 +167,7 @@ use Dist::Surveyor;
 use Dist::Surveyor::Inquiry; # internal
 use Dist::Surveyor::MakeCpan;
 
-our $VERSION = '0.019';
+our $VERSION = '0.020';
 
 use constant PROGNAME => 'dist_surveyor';
 
