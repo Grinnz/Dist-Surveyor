@@ -254,7 +254,7 @@ $fatpacked{"Dist/Surveyor.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'D
   use Module::CoreList;
   use Module::Metadata;
   
-  our $VERSION = '0.018';
+  our $VERSION = '0.020';
   
   use constant ON_WIN32 => $^O eq 'MSWin32';
   use constant ON_VMS   => $^O eq 'VMS';
@@ -846,7 +846,7 @@ $fatpacked{"Dist/Surveyor/DB_File.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"
   use warnings;
   use Storable qw(freeze thaw);
   
-  our $VERSION = '0.018';
+  our $VERSION = '0.020';
   
   our @ISA;
   if    (eval { require DB_File;   1; }) {
@@ -892,7 +892,7 @@ $fatpacked{"Dist/Surveyor/Inquiry.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"
   use Data::Dumper;
   use version;
   
-  our $VERSION = '0.018';
+  our $VERSION = '0.020';
   
   =head1 NAME
   
@@ -1358,7 +1358,7 @@ $fatpacked{"Dist/Surveyor/MakeCpan.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\
   use Dist::Surveyor::Inquiry;
   use List::Util qw(max); # core
   
-  our $VERSION = '0.018';
+  our $VERSION = '0.020';
   
   our $verbose;
   *verbose = \$::VERBOSE;
@@ -30401,6 +30401,8 @@ you also need L<Compress::Zlib>.
 
 =head1 OPTIONS
 
+    --version    Print script and Perl version
+
     --verbose    Show more detailed progress
 
     --debug      Show much more information
@@ -30452,7 +30454,7 @@ warnings during the run.
 
 Then, to install those distributions into a new library:
 
-    cpanm --mirror file:$PWD/my_cpan --mirror-only [-l new_lib] < installed_dists.txt
+    cpanm --from file:$PWD/my_cpan [-l new_lib] < installed_dists.txt
 
 It's very likely that some distributions will fail tests and not install,
 which will, in turn, cause others to fail. Once the initial run is complete
@@ -30466,11 +30468,11 @@ it to skip those that it knows are already installed. The L</--makecpan> option
 writes a list of 'token packages', one per distribution, so you can use that
 with cpanm:
 
-    cpanm --mirror file:$PWD/my_cpan --mirror-only [-l new_lib] < my_cpan/dist_surveyor/token_packages.txt
+    cpanm --from file:$PWD/my_cpan [-l new_lib] < my_cpan/dist_surveyor/token_packages.txt
 
 When a distro fails tests I use the cpanm C<--look> option to investigate:
 
-    cpanm --mirror file:$PWD/my_cpan --mirror-only --look Some::Package
+    cpanm --from file:$PWD/my_cpan --look Some::Package
 
 I'll often end up building, testing and installing the distro from within that
 cpanm look shell. Once installed I'll rerun cpanm using the full C<token_packages.txt>
@@ -30522,7 +30524,7 @@ use Dist::Surveyor;
 use Dist::Surveyor::Inquiry; # internal
 use Dist::Surveyor::MakeCpan;
 
-our $VERSION = '0.018';
+our $VERSION = '0.020';
 
 use constant PROGNAME => 'dist_surveyor';
 
