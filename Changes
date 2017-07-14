@@ -1,6 +1,8 @@
 Revision history for Dist-Surveyor
 
 {{$NEXT}}
+
+0.020     2017-07-13 21:02:03-04:00 America/New_York
 	- Update documentation to use cpanm --from instead of --mirror for local installation
 	- Move compile test to author-only tests
 

@@ -12,7 +12,7 @@ use Scalar::Util qw(looks_like_number); # core
 use Data::Dumper;
 use version;
 
-our $VERSION = '0.020';
+our $VERSION = '0.021';
 
 =head1 NAME
 
