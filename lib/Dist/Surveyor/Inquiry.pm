@@ -176,11 +176,11 @@ sub get_release_info {
     $metacpan_calls++;
     my $response = _https_request(GET => "https://fastapi.metacpan.org/v1/release/$author/$release");
     my $release_data = decode_json $response;
-    if (!$release_data) {
+    if (!$release_data or !$release_data->{release}) {
         warn "Can't find release details for $author/$release - SKIPPED!\n";
         return; # XXX could fake some of $release_data instead
     }
-    return $release_data;
+    return $release_data->{release};
 }
 
 =head2 get_candidate_cpan_dist_releases($module, $version, $file_size)
