@@ -25,7 +25,10 @@ my @ignored_package = qw{
     };
 
 my %handled_packages = map { ($_ => 1) } qw{
+    Exporter
+    File/Path
     File/Which
+    Getopt/Long
     HTTP/Tiny
     IPC/System/Simple
     JSON/MaybeXS

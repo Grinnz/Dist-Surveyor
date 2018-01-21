@@ -254,7 +254,7 @@ $fatpacked{"Dist/Surveyor.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'D
   use Module::CoreList;
   use Module::Metadata;
   
-  our $VERSION = '0.020';
+  our $VERSION = '0.022';
   
   use constant ON_WIN32 => $^O eq 'MSWin32';
   use constant ON_VMS   => $^O eq 'VMS';
@@ -846,7 +846,7 @@ $fatpacked{"Dist/Surveyor/DB_File.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"
   use warnings;
   use Storable qw(freeze thaw);
   
-  our $VERSION = '0.020';
+  our $VERSION = '0.022';
   
   our @ISA;
   if    (eval { require DB_File;   1; }) {
@@ -892,7 +892,7 @@ $fatpacked{"Dist/Surveyor/Inquiry.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"
   use Data::Dumper;
   use version;
   
-  our $VERSION = '0.020';
+  our $VERSION = '0.022';
   
   =head1 NAME
   
@@ -1056,11 +1056,11 @@ $fatpacked{"Dist/Surveyor/Inquiry.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"
       $metacpan_calls++;
       my $response = _https_request(GET => "https://fastapi.metacpan.org/v1/release/$author/$release");
       my $release_data = decode_json $response;
-      if (!$release_data) {
+      if (!$release_data or !$release_data->{release}) {
           warn "Can't find release details for $author/$release - SKIPPED!\n";
           return; # XXX could fake some of $release_data instead
       }
-      return $release_data;
+      return $release_data->{release};
   }
   
   =head2 get_candidate_cpan_dist_releases($module, $version, $file_size)
@@ -1358,7 +1358,7 @@ $fatpacked{"Dist/Surveyor/MakeCpan.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\
   use Dist::Surveyor::Inquiry;
   use List::Util qw(max); # core
   
-  our $VERSION = '0.020';
+  our $VERSION = '0.022';
   
   our $verbose;
   *verbose = \$::VERBOSE;
@@ -1713,6 +1713,2146 @@ $fatpacked{"Dist/Surveyor/MakeCpan.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\
   =cut
 DIST_SURVEYOR_MAKECPAN
 
+$fatpacked{"Exporter.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'EXPORTER';
+  package Exporter;
+  
+  require 5.006;
+  
+  # Be lean.
+  #use strict;
+  #no strict 'refs';
+  
+  our $Debug = 0;
+  our $ExportLevel = 0;
+  our $Verbose ||= 0;
+  our $VERSION = '5.72';
+  our (%Cache);
+  
+  sub as_heavy {
+    require Exporter::Heavy;
+    # Unfortunately, this does not work if the caller is aliased as *name = \&foo
+    # Thus the need to create a lot of identical subroutines
+    my $c = (caller(1))[3];
+    $c =~ s/.*:://;
+    \&{"Exporter::Heavy::heavy_$c"};
+  }
+  
+  sub export {
+    goto &{as_heavy()};
+  }
+  
+  sub import {
+    my $pkg = shift;
+    my $callpkg = caller($ExportLevel);
+  
+    if ($pkg eq "Exporter" and @_ and $_[0] eq "import") {
+      *{$callpkg."::import"} = \&import;
+      return;
+    }
+  
+    # We *need* to treat @{"$pkg\::EXPORT_FAIL"} since Carp uses it :-(
+    my $exports = \@{"$pkg\::EXPORT"};
+    # But, avoid creating things if they don't exist, which saves a couple of
+    # hundred bytes per package processed.
+    my $fail = ${$pkg . '::'}{EXPORT_FAIL} && \@{"$pkg\::EXPORT_FAIL"};
+    return export $pkg, $callpkg, @_
+      if $Verbose or $Debug or $fail && @$fail > 1;
+    my $export_cache = ($Cache{$pkg} ||= {});
+    my $args = @_ or @_ = @$exports;
+  
+    if ($args and not %$export_cache) {
+      s/^&//, $export_cache->{$_} = 1
+        foreach (@$exports, @{"$pkg\::EXPORT_OK"});
+    }
+    my $heavy;
+    # Try very hard not to use {} and hence have to  enter scope on the foreach
+    # We bomb out of the loop with last as soon as heavy is set.
+    if ($args or $fail) {
+      ($heavy = (/\W/ or $args and not exists $export_cache->{$_}
+                 or $fail and @$fail and $_ eq $fail->[0])) and last
+                   foreach (@_);
+    } else {
+      ($heavy = /\W/) and last
+        foreach (@_);
+    }
+    return export $pkg, $callpkg, ($args ? @_ : ()) if $heavy;
+    local $SIG{__WARN__} = 
+  	sub {require Carp; &Carp::carp} if not $SIG{__WARN__};
+    # shortcut for the common case of no type character
+    *{"$callpkg\::$_"} = \&{"$pkg\::$_"} foreach @_;
+  }
+  
+  # Default methods
+  
+  sub export_fail {
+      my $self = shift;
+      @_;
+  }
+  
+  # Unfortunately, caller(1)[3] "does not work" if the caller is aliased as
+  # *name = \&foo.  Thus the need to create a lot of identical subroutines
+  # Otherwise we could have aliased them to export().
+  
+  sub export_to_level {
+    goto &{as_heavy()};
+  }
+  
+  sub export_tags {
+    goto &{as_heavy()};
+  }
+  
+  sub export_ok_tags {
+    goto &{as_heavy()};
+  }
+  
+  sub require_version {
+    goto &{as_heavy()};
+  }
+  
+  1;
+  __END__
+  
+  =head1 NAME
+  
+  Exporter - Implements default import method for modules
+  
+  =head1 SYNOPSIS
+  
+  In module F<YourModule.pm>:
+  
+    package YourModule;
+    require Exporter;
+    @ISA = qw(Exporter);
+    @EXPORT_OK = qw(munge frobnicate);  # symbols to export on request
+  
+  or
+  
+    package YourModule;
+    use Exporter 'import'; # gives you Exporter's import() method directly
+    @EXPORT_OK = qw(munge frobnicate);  # symbols to export on request
+  
+  In other files which wish to use C<YourModule>:
+  
+    use YourModule qw(frobnicate);      # import listed symbols
+    frobnicate ($left, $right)          # calls YourModule::frobnicate
+  
+  Take a look at L</Good Practices> for some variants
+  you will like to use in modern Perl code.
+  
+  =head1 DESCRIPTION
+  
+  The Exporter module implements an C<import> method which allows a module
+  to export functions and variables to its users' namespaces.  Many modules
+  use Exporter rather than implementing their own C<import> method because
+  Exporter provides a highly flexible interface, with an implementation optimised
+  for the common case.
+  
+  Perl automatically calls the C<import> method when processing a
+  C<use> statement for a module.  Modules and C<use> are documented
+  in L<perlfunc> and L<perlmod>.  Understanding the concept of
+  modules and how the C<use> statement operates is important to
+  understanding the Exporter.
+  
+  =head2 How to Export
+  
+  The arrays C<@EXPORT> and C<@EXPORT_OK> in a module hold lists of
+  symbols that are going to be exported into the users name space by
+  default, or which they can request to be exported, respectively.  The
+  symbols can represent functions, scalars, arrays, hashes, or typeglobs.
+  The symbols must be given by full name with the exception that the
+  ampersand in front of a function is optional, e.g.
+  
+      @EXPORT    = qw(afunc $scalar @array);   # afunc is a function
+      @EXPORT_OK = qw(&bfunc %hash *typeglob); # explicit prefix on &bfunc
+  
+  If you are only exporting function names it is recommended to omit the
+  ampersand, as the implementation is faster this way.
+  
+  =head2 Selecting What to Export
+  
+  Do B<not> export method names!
+  
+  Do B<not> export anything else by default without a good reason!
+  
+  Exports pollute the namespace of the module user.  If you must export
+  try to use C<@EXPORT_OK> in preference to C<@EXPORT> and avoid short or
+  common symbol names to reduce the risk of name clashes.
+  
+  Generally anything not exported is still accessible from outside the
+  module using the C<YourModule::item_name> (or C<< $blessed_ref->method >>)
+  syntax.  By convention you can use a leading underscore on names to
+  informally indicate that they are 'internal' and not for public use.
+  
+  (It is actually possible to get private functions by saying:
+  
+    my $subref = sub { ... };
+    $subref->(@args);            # Call it as a function
+    $obj->$subref(@args);        # Use it as a method
+  
+  However if you use them for methods it is up to you to figure out
+  how to make inheritance work.)
+  
+  As a general rule, if the module is trying to be object oriented
+  then export nothing.  If it's just a collection of functions then
+  C<@EXPORT_OK> anything but use C<@EXPORT> with caution.  For function and
+  method names use barewords in preference to names prefixed with
+  ampersands for the export lists.
+  
+  Other module design guidelines can be found in L<perlmod>.
+  
+  =head2 How to Import
+  
+  In other files which wish to use your module there are three basic ways for
+  them to load your module and import its symbols:
+  
+  =over 4
+  
+  =item C<use YourModule;>
+  
+  This imports all the symbols from YourModule's C<@EXPORT> into the namespace
+  of the C<use> statement.
+  
+  =item C<use YourModule ();>
+  
+  This causes perl to load your module but does not import any symbols.
+  
+  =item C<use YourModule qw(...);>
+  
+  This imports only the symbols listed by the caller into their namespace.
+  All listed symbols must be in your C<@EXPORT> or C<@EXPORT_OK>, else an error
+  occurs.  The advanced export features of Exporter are accessed like this,
+  but with list entries that are syntactically distinct from symbol names.
+  
+  =back
+  
+  Unless you want to use its advanced features, this is probably all you
+  need to know to use Exporter.
+  
+  =head1 Advanced Features
+  
+  =head2 Specialised Import Lists
+  
+  If any of the entries in an import list begins with !, : or / then
+  the list is treated as a series of specifications which either add to
+  or delete from the list of names to import.  They are processed left to
+  right. Specifications are in the form:
+  
+      [!]name         This name only
+      [!]:DEFAULT     All names in @EXPORT
+      [!]:tag         All names in $EXPORT_TAGS{tag} anonymous array
+      [!]/pattern/    All names in @EXPORT and @EXPORT_OK which match
+  
+  A leading ! indicates that matching names should be deleted from the
+  list of names to import.  If the first specification is a deletion it
+  is treated as though preceded by :DEFAULT.  If you just want to import
+  extra names in addition to the default set you will still need to
+  include :DEFAULT explicitly.
+  
+  e.g., F<Module.pm> defines:
+  
+      @EXPORT      = qw(A1 A2 A3 A4 A5);
+      @EXPORT_OK   = qw(B1 B2 B3 B4 B5);
+      %EXPORT_TAGS = (T1 => [qw(A1 A2 B1 B2)], T2 => [qw(A1 A2 B3 B4)]);
+  
+  Note that you cannot use tags in @EXPORT or @EXPORT_OK.
+  
+  Names in EXPORT_TAGS must also appear in @EXPORT or @EXPORT_OK.
+  
+  An application using Module can say something like:
+  
+      use Module qw(:DEFAULT :T2 !B3 A3);
+  
+  Other examples include:
+  
+      use Socket qw(!/^[AP]F_/ !SOMAXCONN !SOL_SOCKET);
+      use POSIX  qw(:errno_h :termios_h !TCSADRAIN !/^EXIT/);
+  
+  Remember that most patterns (using //) will need to be anchored
+  with a leading ^, e.g., C</^EXIT/> rather than C</EXIT/>.
+  
+  You can say C<BEGIN { $Exporter::Verbose=1 }> to see how the
+  specifications are being processed and what is actually being imported
+  into modules.
+  
+  =head2 Exporting Without Using Exporter's import Method
+  
+  Exporter has a special method, 'export_to_level' which is used in situations
+  where you can't directly call Exporter's
+  import method.  The export_to_level
+  method looks like:
+  
+      MyPackage->export_to_level(
+  	$where_to_export, $package, @what_to_export
+      );
+  
+  where C<$where_to_export> is an integer telling how far up the calling stack
+  to export your symbols, and C<@what_to_export> is an array telling what
+  symbols *to* export (usually this is C<@_>).  The C<$package> argument is
+  currently unused.
+  
+  For example, suppose that you have a module, A, which already has an
+  import function:
+  
+      package A;
+  
+      @ISA = qw(Exporter);
+      @EXPORT_OK = qw($b);
+  
+      sub import
+      {
+  	$A::b = 1;     # not a very useful import method
+      }
+  
+  and you want to Export symbol C<$A::b> back to the module that called 
+  package A.  Since Exporter relies on the import method to work, via 
+  inheritance, as it stands Exporter::import() will never get called. 
+  Instead, say the following:
+  
+      package A;
+      @ISA = qw(Exporter);
+      @EXPORT_OK = qw($b);
+  
+      sub import
+      {
+  	$A::b = 1;
+  	A->export_to_level(1, @_);
+      }
+  
+  This will export the symbols one level 'above' the current package - ie: to 
+  the program or module that used package A. 
+  
+  Note: Be careful not to modify C<@_> at all before you call export_to_level
+  - or people using your package will get very unexplained results!
+  
+  =head2 Exporting Without Inheriting from Exporter
+  
+  By including Exporter in your C<@ISA> you inherit an Exporter's import() method
+  but you also inherit several other helper methods which you probably don't
+  want.  To avoid this you can do:
+  
+    package YourModule;
+    use Exporter qw(import);
+  
+  which will export Exporter's own import() method into YourModule.
+  Everything will work as before but you won't need to include Exporter in
+  C<@YourModule::ISA>.
+  
+  Note: This feature was introduced in version 5.57
+  of Exporter, released with perl 5.8.3.
+  
+  =head2 Module Version Checking
+  
+  The Exporter module will convert an attempt to import a number from a
+  module into a call to C<< $module_name->VERSION($value) >>.  This can
+  be used to validate that the version of the module being used is
+  greater than or equal to the required version.
+  
+  For historical reasons, Exporter supplies a C<require_version> method that
+  simply delegates to C<VERSION>.  Originally, before C<UNIVERSAL::VERSION>
+  existed, Exporter would call C<require_version>.
+  
+  Since the C<UNIVERSAL::VERSION> method treats the C<$VERSION> number as
+  a simple numeric value it will regard version 1.10 as lower than
+  1.9.  For this reason it is strongly recommended that you use numbers
+  with at least two decimal places, e.g., 1.09.
+  
+  =head2 Managing Unknown Symbols
+  
+  In some situations you may want to prevent certain symbols from being
+  exported.  Typically this applies to extensions which have functions
+  or constants that may not exist on some systems.
+  
+  The names of any symbols that cannot be exported should be listed
+  in the C<@EXPORT_FAIL> array.
+  
+  If a module attempts to import any of these symbols the Exporter
+  will give the module an opportunity to handle the situation before
+  generating an error.  The Exporter will call an export_fail method
+  with a list of the failed symbols:
+  
+    @failed_symbols = $module_name->export_fail(@failed_symbols);
+  
+  If the C<export_fail> method returns an empty list then no error is
+  recorded and all the requested symbols are exported.  If the returned
+  list is not empty then an error is generated for each symbol and the
+  export fails.  The Exporter provides a default C<export_fail> method which
+  simply returns the list unchanged.
+  
+  Uses for the C<export_fail> method include giving better error messages
+  for some symbols and performing lazy architectural checks (put more
+  symbols into C<@EXPORT_FAIL> by default and then take them out if someone
+  actually tries to use them and an expensive check shows that they are
+  usable on that platform).
+  
+  =head2 Tag Handling Utility Functions
+  
+  Since the symbols listed within C<%EXPORT_TAGS> must also appear in either
+  C<@EXPORT> or C<@EXPORT_OK>, two utility functions are provided which allow
+  you to easily add tagged sets of symbols to C<@EXPORT> or C<@EXPORT_OK>:
+  
+    %EXPORT_TAGS = (foo => [qw(aa bb cc)], bar => [qw(aa cc dd)]);
+  
+    Exporter::export_tags('foo');     # add aa, bb and cc to @EXPORT
+    Exporter::export_ok_tags('bar');  # add aa, cc and dd to @EXPORT_OK
+  
+  Any names which are not tags are added to C<@EXPORT> or C<@EXPORT_OK>
+  unchanged but will trigger a warning (with C<-w>) to avoid misspelt tags
+  names being silently added to C<@EXPORT> or C<@EXPORT_OK>.  Future versions
+  may make this a fatal error.
+  
+  =head2 Generating Combined Tags
+  
+  If several symbol categories exist in C<%EXPORT_TAGS>, it's usually
+  useful to create the utility ":all" to simplify "use" statements.
+  
+  The simplest way to do this is:
+  
+    %EXPORT_TAGS = (foo => [qw(aa bb cc)], bar => [qw(aa cc dd)]);
+  
+    # add all the other ":class" tags to the ":all" class,
+    # deleting duplicates
+    {
+      my %seen;
+  
+      push @{$EXPORT_TAGS{all}},
+        grep {!$seen{$_}++} @{$EXPORT_TAGS{$_}} foreach keys %EXPORT_TAGS;
+    }
+  
+  F<CGI.pm> creates an ":all" tag which contains some (but not really
+  all) of its categories.  That could be done with one small
+  change:
+  
+    # add some of the other ":class" tags to the ":all" class,
+    # deleting duplicates
+    {
+      my %seen;
+  
+      push @{$EXPORT_TAGS{all}},
+        grep {!$seen{$_}++} @{$EXPORT_TAGS{$_}}
+          foreach qw/html2 html3 netscape form cgi internal/;
+    }
+  
+  Note that the tag names in C<%EXPORT_TAGS> don't have the leading ':'.
+  
+  =head2 C<AUTOLOAD>ed Constants
+  
+  Many modules make use of C<AUTOLOAD>ing for constant subroutines to
+  avoid having to compile and waste memory on rarely used values (see
+  L<perlsub> for details on constant subroutines).  Calls to such
+  constant subroutines are not optimized away at compile time because
+  they can't be checked at compile time for constancy.
+  
+  Even if a prototype is available at compile time, the body of the
+  subroutine is not (it hasn't been C<AUTOLOAD>ed yet).  perl needs to
+  examine both the C<()> prototype and the body of a subroutine at
+  compile time to detect that it can safely replace calls to that
+  subroutine with the constant value.
+  
+  A workaround for this is to call the constants once in a C<BEGIN> block:
+  
+     package My ;
+  
+     use Socket ;
+  
+     foo( SO_LINGER );  ## SO_LINGER NOT optimized away; called at runtime
+     BEGIN { SO_LINGER }
+     foo( SO_LINGER );  ## SO_LINGER optimized away at compile time.
+  
+  This forces the C<AUTOLOAD> for C<SO_LINGER> to take place before
+  SO_LINGER is encountered later in C<My> package.
+  
+  If you are writing a package that C<AUTOLOAD>s, consider forcing
+  an C<AUTOLOAD> for any constants explicitly imported by other packages
+  or which are usually used when your package is C<use>d.
+  
+  =head1 Good Practices
+  
+  =head2 Declaring C<@EXPORT_OK> and Friends
+  
+  When using C<Exporter> with the standard C<strict> and C<warnings>
+  pragmas, the C<our> keyword is needed to declare the package
+  variables C<@EXPORT_OK>, C<@EXPORT>, C<@ISA>, etc.
+  
+    our @ISA = qw(Exporter);
+    our @EXPORT_OK = qw(munge frobnicate);
+  
+  If backward compatibility for Perls under 5.6 is important,
+  one must write instead a C<use vars> statement.
+  
+    use vars qw(@ISA @EXPORT_OK);
+    @ISA = qw(Exporter);
+    @EXPORT_OK = qw(munge frobnicate);
+  
+  =head2 Playing Safe
+  
+  There are some caveats with the use of runtime statements
+  like C<require Exporter> and the assignment to package
+  variables, which can be very subtle for the unaware programmer.
+  This may happen for instance with mutually recursive
+  modules, which are affected by the time the relevant
+  constructions are executed.
+  
+  The ideal (but a bit ugly) way to never have to think
+  about that is to use C<BEGIN> blocks.  So the first part
+  of the L</SYNOPSIS> code could be rewritten as:
+  
+    package YourModule;
+  
+    use strict;
+    use warnings;
+  
+    our (@ISA, @EXPORT_OK);
+    BEGIN {
+       require Exporter;
+       @ISA = qw(Exporter);
+       @EXPORT_OK = qw(munge frobnicate);  # symbols to export on request
+    }
+  
+  The C<BEGIN> will assure that the loading of F<Exporter.pm>
+  and the assignments to C<@ISA> and C<@EXPORT_OK> happen
+  immediately, leaving no room for something to get awry
+  or just plain wrong.
+  
+  With respect to loading C<Exporter> and inheriting, there
+  are alternatives with the use of modules like C<base> and C<parent>.
+  
+    use base qw(Exporter);
+    # or
+    use parent qw(Exporter);
+  
+  Any of these statements are nice replacements for
+  C<BEGIN { require Exporter; @ISA = qw(Exporter); }>
+  with the same compile-time effect.  The basic difference
+  is that C<base> code interacts with declared C<fields>
+  while C<parent> is a streamlined version of the older
+  C<base> code to just establish the IS-A relationship.
+  
+  For more details, see the documentation and code of
+  L<base> and L<parent>.
+  
+  Another thorough remedy to that runtime
+  vs. compile-time trap is to use L<Exporter::Easy>,
+  which is a wrapper of Exporter that allows all
+  boilerplate code at a single gulp in the
+  use statement.
+  
+     use Exporter::Easy (
+         OK => [ qw(munge frobnicate) ],
+     );
+     # @ISA setup is automatic
+     # all assignments happen at compile time
+  
+  =head2 What Not to Export
+  
+  You have been warned already in L</Selecting What to Export>
+  to not export:
+  
+  =over 4
+  
+  =item *
+  
+  method names (because you don't need to
+  and that's likely to not do what you want),
+  
+  =item *
+  
+  anything by default (because you don't want to surprise your users...
+  badly)
+  
+  =item *
+  
+  anything you don't need to (because less is more)
+  
+  =back
+  
+  There's one more item to add to this list.  Do B<not>
+  export variable names.  Just because C<Exporter> lets you
+  do that, it does not mean you should.
+  
+    @EXPORT_OK = qw($svar @avar %hvar); # DON'T!
+  
+  Exporting variables is not a good idea.  They can
+  change under the hood, provoking horrible
+  effects at-a-distance that are too hard to track
+  and to fix.  Trust me: they are not worth it.
+  
+  To provide the capability to set/get class-wide
+  settings, it is best instead to provide accessors
+  as subroutines or class methods instead.
+  
+  =head1 SEE ALSO
+  
+  C<Exporter> is definitely not the only module with
+  symbol exporter capabilities.  At CPAN, you may find
+  a bunch of them.  Some are lighter.  Some
+  provide improved APIs and features.  Pick the one
+  that fits your needs.  The following is
+  a sample list of such modules.
+  
+      Exporter::Easy
+      Exporter::Lite
+      Exporter::Renaming
+      Exporter::Tidy
+      Sub::Exporter / Sub::Installer
+      Perl6::Export / Perl6::Export::Attrs
+  
+  =head1 LICENSE
+  
+  This library is free software.  You can redistribute it
+  and/or modify it under the same terms as Perl itself.
+  
+  =cut
+  
+  
+  
+EXPORTER
+
+$fatpacked{"Exporter/Heavy.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'EXPORTER_HEAVY';
+  package Exporter::Heavy;
+  
+  use strict;
+  no strict 'refs';
+  
+  # On one line so MakeMaker will see it.
+  require Exporter;  our $VERSION = $Exporter::VERSION;
+  
+  =head1 NAME
+  
+  Exporter::Heavy - Exporter guts
+  
+  =head1 SYNOPSIS
+  
+  (internal use only)
+  
+  =head1 DESCRIPTION
+  
+  No user-serviceable parts inside.
+  
+  =cut
+  
+  #
+  # We go to a lot of trouble not to 'require Carp' at file scope,
+  #  because Carp requires Exporter, and something has to give.
+  #
+  
+  sub _rebuild_cache {
+      my ($pkg, $exports, $cache) = @_;
+      s/^&// foreach @$exports;
+      @{$cache}{@$exports} = (1) x @$exports;
+      my $ok = \@{"${pkg}::EXPORT_OK"};
+      if (@$ok) {
+  	s/^&// foreach @$ok;
+  	@{$cache}{@$ok} = (1) x @$ok;
+      }
+  }
+  
+  sub heavy_export {
+  
+      # Save the old __WARN__ handler in case it was defined
+      my $oldwarn = $SIG{__WARN__};
+  
+      # First make import warnings look like they're coming from the "use".
+      local $SIG{__WARN__} = sub {
+  	# restore it back so proper stacking occurs
+  	local $SIG{__WARN__} = $oldwarn;
+  	my $text = shift;
+  	if ($text =~ s/ at \S*Exporter\S*.pm line \d+.*\n//) {
+  	    require Carp;
+  	    local $Carp::CarpLevel = 1;	# ignore package calling us too.
+  	    Carp::carp($text);
+  	}
+  	else {
+  	    warn $text;
+  	}
+      };
+      local $SIG{__DIE__} = sub {
+  	require Carp;
+  	local $Carp::CarpLevel = 1;	# ignore package calling us too.
+  	Carp::croak("$_[0]Illegal null symbol in \@${1}::EXPORT")
+  	    if $_[0] =~ /^Unable to create sub named "(.*?)::"/;
+      };
+  
+      my($pkg, $callpkg, @imports) = @_;
+      my($type, $sym, $cache_is_current, $oops);
+      my($exports, $export_cache) = (\@{"${pkg}::EXPORT"},
+                                     $Exporter::Cache{$pkg} ||= {});
+  
+      if (@imports) {
+  	if (!%$export_cache) {
+  	    _rebuild_cache ($pkg, $exports, $export_cache);
+  	    $cache_is_current = 1;
+  	}
+  
+  	if (grep m{^[/!:]}, @imports) {
+  	    my $tagsref = \%{"${pkg}::EXPORT_TAGS"};
+  	    my $tagdata;
+  	    my %imports;
+  	    my($remove, $spec, @names, @allexports);
+  	    # negated first item implies starting with default set:
+  	    unshift @imports, ':DEFAULT' if $imports[0] =~ m/^!/;
+  	    foreach $spec (@imports){
+  		$remove = $spec =~ s/^!//;
+  
+  		if ($spec =~ s/^://){
+  		    if ($spec eq 'DEFAULT'){
+  			@names = @$exports;
+  		    }
+  		    elsif ($tagdata = $tagsref->{$spec}) {
+  			@names = @$tagdata;
+  		    }
+  		    else {
+  			warn qq["$spec" is not defined in %${pkg}::EXPORT_TAGS];
+  			++$oops;
+  			next;
+  		    }
+  		}
+  		elsif ($spec =~ m:^/(.*)/$:){
+  		    my $patn = $1;
+  		    @allexports = keys %$export_cache unless @allexports; # only do keys once
+  		    @names = grep(/$patn/, @allexports); # not anchored by default
+  		}
+  		else {
+  		    @names = ($spec); # is a normal symbol name
+  		}
+  
+  		warn "Import ".($remove ? "del":"add").": @names "
+  		    if $Exporter::Verbose;
+  
+  		if ($remove) {
+  		   foreach $sym (@names) { delete $imports{$sym} } 
+  		}
+  		else {
+  		    @imports{@names} = (1) x @names;
+  		}
+  	    }
+  	    @imports = keys %imports;
+  	}
+  
+          my @carp;
+  	foreach $sym (@imports) {
+  	    if (!$export_cache->{$sym}) {
+  		if ($sym =~ m/^\d/) {
+  		    $pkg->VERSION($sym); # inherit from UNIVERSAL
+  		    # If the version number was the only thing specified
+  		    # then we should act as if nothing was specified:
+  		    if (@imports == 1) {
+  			@imports = @$exports;
+  			last;
+  		    }
+  		    # We need a way to emulate 'use Foo ()' but still
+  		    # allow an easy version check: "use Foo 1.23, ''";
+  		    if (@imports == 2 and !$imports[1]) {
+  			@imports = ();
+  			last;
+  		    }
+  		} elsif ($sym !~ s/^&// || !$export_cache->{$sym}) {
+  		    # Last chance - see if they've updated EXPORT_OK since we
+  		    # cached it.
+  
+  		    unless ($cache_is_current) {
+  			%$export_cache = ();
+  			_rebuild_cache ($pkg, $exports, $export_cache);
+  			$cache_is_current = 1;
+  		    }
+  
+  		    if (!$export_cache->{$sym}) {
+  			# accumulate the non-exports
+  			push @carp,
+  			  qq["$sym" is not exported by the $pkg module\n];
+  			$oops++;
+  		    }
+  		}
+  	    }
+  	}
+  	if ($oops) {
+  	    require Carp;
+  	    Carp::croak("@{carp}Can't continue after import errors");
+  	}
+      }
+      else {
+  	@imports = @$exports;
+      }
+  
+      my($fail, $fail_cache) = (\@{"${pkg}::EXPORT_FAIL"},
+                                $Exporter::FailCache{$pkg} ||= {});
+  
+      if (@$fail) {
+  	if (!%$fail_cache) {
+  	    # Build cache of symbols. Optimise the lookup by adding
+  	    # barewords twice... both with and without a leading &.
+  	    # (Technique could be applied to $export_cache at cost of memory)
+  	    my @expanded = map { /^\w/ ? ($_, '&'.$_) : $_ } @$fail;
+  	    warn "${pkg}::EXPORT_FAIL cached: @expanded" if $Exporter::Verbose;
+  	    @{$fail_cache}{@expanded} = (1) x @expanded;
+  	}
+  	my @failed;
+  	foreach $sym (@imports) { push(@failed, $sym) if $fail_cache->{$sym} }
+  	if (@failed) {
+  	    @failed = $pkg->export_fail(@failed);
+  	    foreach $sym (@failed) {
+                  require Carp;
+  		Carp::carp(qq["$sym" is not implemented by the $pkg module ],
+  			"on this architecture");
+  	    }
+  	    if (@failed) {
+  		require Carp;
+  		Carp::croak("Can't continue after import errors");
+  	    }
+  	}
+      }
+  
+      warn "Importing into $callpkg from $pkg: ",
+  		join(", ",sort @imports) if $Exporter::Verbose;
+  
+      foreach $sym (@imports) {
+  	# shortcut for the common case of no type character
+  	(*{"${callpkg}::$sym"} = \&{"${pkg}::$sym"}, next)
+  	    unless $sym =~ s/^(\W)//;
+  	$type = $1;
+  	no warnings 'once';
+  	*{"${callpkg}::$sym"} =
+  	    $type eq '&' ? \&{"${pkg}::$sym"} :
+  	    $type eq '$' ? \${"${pkg}::$sym"} :
+  	    $type eq '@' ? \@{"${pkg}::$sym"} :
+  	    $type eq '%' ? \%{"${pkg}::$sym"} :
+  	    $type eq '*' ?  *{"${pkg}::$sym"} :
+  	    do { require Carp; Carp::croak("Can't export symbol: $type$sym") };
+      }
+  }
+  
+  sub heavy_export_to_level
+  {
+        my $pkg = shift;
+        my $level = shift;
+        (undef) = shift;			# XXX redundant arg
+        my $callpkg = caller($level);
+        $pkg->export($callpkg, @_);
+  }
+  
+  # Utility functions
+  
+  sub _push_tags {
+      my($pkg, $var, $syms) = @_;
+      my @nontag = ();
+      my $export_tags = \%{"${pkg}::EXPORT_TAGS"};
+      push(@{"${pkg}::$var"},
+  	map { $export_tags->{$_} ? @{$export_tags->{$_}} 
+                                   : scalar(push(@nontag,$_),$_) }
+  		(@$syms) ? @$syms : keys %$export_tags);
+      if (@nontag and $^W) {
+  	# This may change to a die one day
+  	require Carp;
+  	Carp::carp(join(", ", @nontag)." are not tags of $pkg");
+      }
+  }
+  
+  sub heavy_require_version {
+      my($self, $wanted) = @_;
+      my $pkg = ref $self || $self;
+      return ${pkg}->VERSION($wanted);
+  }
+  
+  sub heavy_export_tags {
+    _push_tags((caller)[0], "EXPORT",    \@_);
+  }
+  
+  sub heavy_export_ok_tags {
+    _push_tags((caller)[0], "EXPORT_OK", \@_);
+  }
+  
+  1;
+EXPORTER_HEAVY
+
+$fatpacked{"File/Path.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'FILE_PATH';
+  package File::Path;
+  
+  use 5.005_04;
+  use strict;
+  
+  use Cwd 'getcwd';
+  use File::Basename ();
+  use File::Spec     ();
+  
+  BEGIN {
+      if ( $] < 5.006 ) {
+  
+          # can't say 'opendir my $dh, $dirname'
+          # need to initialise $dh
+          eval 'use Symbol';
+      }
+  }
+  
+  use Exporter ();
+  use vars qw($VERSION @ISA @EXPORT @EXPORT_OK);
+  $VERSION   = '2.15';
+  $VERSION   = eval $VERSION;
+  @ISA       = qw(Exporter);
+  @EXPORT    = qw(mkpath rmtree);
+  @EXPORT_OK = qw(make_path remove_tree);
+  
+  BEGIN {
+    for (qw(VMS MacOS MSWin32 os2)) {
+      no strict 'refs';
+      *{"_IS_\U$_"} = $^O eq $_ ? sub () { 1 } : sub () { 0 };
+    }
+  
+    # These OSes complain if you want to remove a file that you have no
+    # write permission to:
+    *_FORCE_WRITABLE = (
+      grep { $^O eq $_ } qw(amigaos dos epoc MSWin32 MacOS os2)
+    ) ? sub () { 1 } : sub () { 0 };
+  
+    # Unix-like systems need to stat each directory in order to detect
+    # race condition. MS-Windows is immune to this particular attack.
+    *_NEED_STAT_CHECK = !(_IS_MSWIN32()) ? sub () { 1 } : sub () { 0 };
+  }
+  
+  sub _carp {
+      require Carp;
+      goto &Carp::carp;
+  }
+  
+  sub _croak {
+      require Carp;
+      goto &Carp::croak;
+  }
+  
+  sub _error {
+      my $arg     = shift;
+      my $message = shift;
+      my $object  = shift;
+  
+      if ( $arg->{error} ) {
+          $object = '' unless defined $object;
+          $message .= ": $!" if $!;
+          push @{ ${ $arg->{error} } }, { $object => $message };
+      }
+      else {
+          _carp( defined($object) ? "$message for $object: $!" : "$message: $!" );
+      }
+  }
+  
+  sub __is_arg {
+      my ($arg) = @_;
+  
+      # If client code blessed an array ref to HASH, this will not work
+      # properly. We could have done $arg->isa() wrapped in eval, but
+      # that would be expensive. This implementation should suffice.
+      # We could have also used Scalar::Util:blessed, but we choose not
+      # to add this dependency
+      return ( ref $arg eq 'HASH' );
+  }
+  
+  sub make_path {
+      push @_, {} unless @_ and __is_arg( $_[-1] );
+      goto &mkpath;
+  }
+  
+  sub mkpath {
+      my $old_style = !( @_ and __is_arg( $_[-1] ) );
+  
+      my $data;
+      my $paths;
+  
+      if ($old_style) {
+          my ( $verbose, $mode );
+          ( $paths, $verbose, $mode ) = @_;
+          $paths = [$paths] unless UNIVERSAL::isa( $paths, 'ARRAY' );
+          $data->{verbose} = $verbose;
+          $data->{mode} = defined $mode ? $mode : oct '777';
+      }
+      else {
+          my %args_permitted = map { $_ => 1 } ( qw|
+              chmod
+              error
+              group
+              mask
+              mode
+              owner
+              uid
+              user
+              verbose
+          | );
+          my %not_on_win32_args = map { $_ => 1 } ( qw|
+              group
+              owner
+              uid
+              user
+          | );
+          my @bad_args = ();
+          my @win32_implausible_args = ();
+          my $arg = pop @_;
+          for my $k (sort keys %{$arg}) {
+              if (! $args_permitted{$k}) {
+                  push @bad_args, $k;
+              }
+              elsif ($not_on_win32_args{$k} and _IS_MSWIN32) {
+                  push @win32_implausible_args, $k;
+              }
+              else {
+                  $data->{$k} = $arg->{$k};
+              }
+          }
+          _carp("Unrecognized option(s) passed to mkpath() or make_path(): @bad_args")
+              if @bad_args;
+          _carp("Option(s) implausible on Win32 passed to mkpath() or make_path(): @win32_implausible_args")
+              if @win32_implausible_args;
+          $data->{mode} = delete $data->{mask} if exists $data->{mask};
+          $data->{mode} = oct '777' unless exists $data->{mode};
+          ${ $data->{error} } = [] if exists $data->{error};
+          unless (@win32_implausible_args) {
+              $data->{owner} = delete $data->{user} if exists $data->{user};
+              $data->{owner} = delete $data->{uid}  if exists $data->{uid};
+              if ( exists $data->{owner} and $data->{owner} =~ /\D/ ) {
+                  my $uid = ( getpwnam $data->{owner} )[2];
+                  if ( defined $uid ) {
+                      $data->{owner} = $uid;
+                  }
+                  else {
+                      _error( $data,
+                              "unable to map $data->{owner} to a uid, ownership not changed"
+                            );
+                      delete $data->{owner};
+                  }
+              }
+              if ( exists $data->{group} and $data->{group} =~ /\D/ ) {
+                  my $gid = ( getgrnam $data->{group} )[2];
+                  if ( defined $gid ) {
+                      $data->{group} = $gid;
+                  }
+                  else {
+                      _error( $data,
+                              "unable to map $data->{group} to a gid, group ownership not changed"
+                      );
+                      delete $data->{group};
+                  }
+              }
+              if ( exists $data->{owner} and not exists $data->{group} ) {
+                  $data->{group} = -1;    # chown will leave group unchanged
+              }
+              if ( exists $data->{group} and not exists $data->{owner} ) {
+                  $data->{owner} = -1;    # chown will leave owner unchanged
+              }
+          }
+          $paths = [@_];
+      }
+      return _mkpath( $data, $paths );
+  }
+  
+  sub _mkpath {
+      my $data   = shift;
+      my $paths = shift;
+  
+      my ( @created );
+      foreach my $path ( @{$paths} ) {
+          next unless defined($path) and length($path);
+          $path .= '/' if _IS_OS2 and $path =~ /^\w:\z/s; # feature of CRT
+  
+          # Logic wants Unix paths, so go with the flow.
+          if (_IS_VMS) {
+              next if $path eq '/';
+              $path = VMS::Filespec::unixify($path);
+          }
+          next if -d $path;
+          my $parent = File::Basename::dirname($path);
+          # Coverage note:  It's not clear how we would test the condition:
+          # '-d $parent or $path eq $parent'
+          unless ( -d $parent or $path eq $parent ) {
+              push( @created, _mkpath( $data, [$parent] ) );
+          }
+          print "mkdir $path\n" if $data->{verbose};
+          if ( mkdir( $path, $data->{mode} ) ) {
+              push( @created, $path );
+              if ( exists $data->{owner} ) {
+  
+                  # NB: $data->{group} guaranteed to be set during initialisation
+                  if ( !chown $data->{owner}, $data->{group}, $path ) {
+                      _error( $data,
+                          "Cannot change ownership of $path to $data->{owner}:$data->{group}"
+                      );
+                  }
+              }
+              if ( exists $data->{chmod} ) {
+                  # Coverage note:  It's not clear how we would trigger the next
+                  # 'if' block.  Failure of 'chmod' might first result in a
+                  # system error: "Permission denied".
+                  if ( !chmod $data->{chmod}, $path ) {
+                      _error( $data,
+                          "Cannot change permissions of $path to $data->{chmod}" );
+                  }
+              }
+          }
+          else {
+              my $save_bang = $!;
+  
+              # From 'perldoc perlvar': $EXTENDED_OS_ERROR ($^E) is documented
+              # as:
+              # Error information specific to the current operating system. At the
+              # moment, this differs from "$!" under only VMS, OS/2, and Win32
+              # (and for MacPerl). On all other platforms, $^E is always just the
+              # same as $!.
+  
+              my ( $e, $e1 ) = ( $save_bang, $^E );
+              $e .= "; $e1" if $e ne $e1;
+  
+              # allow for another process to have created it meanwhile
+              if ( ! -d $path ) {
+                  $! = $save_bang;
+                  if ( $data->{error} ) {
+                      push @{ ${ $data->{error} } }, { $path => $e };
+                  }
+                  else {
+                      _croak("mkdir $path: $e");
+                  }
+              }
+          }
+      }
+      return @created;
+  }
+  
+  sub remove_tree {
+      push @_, {} unless @_ and __is_arg( $_[-1] );
+      goto &rmtree;
+  }
+  
+  sub _is_subdir {
+      my ( $dir, $test ) = @_;
+  
+      my ( $dv, $dd ) = File::Spec->splitpath( $dir,  1 );
+      my ( $tv, $td ) = File::Spec->splitpath( $test, 1 );
+  
+      # not on same volume
+      return 0 if $dv ne $tv;
+  
+      my @d = File::Spec->splitdir($dd);
+      my @t = File::Spec->splitdir($td);
+  
+      # @t can't be a subdir if it's shorter than @d
+      return 0 if @t < @d;
+  
+      return join( '/', @d ) eq join( '/', splice @t, 0, +@d );
+  }
+  
+  sub rmtree {
+      my $old_style = !( @_ and __is_arg( $_[-1] ) );
+  
+      my ($arg, $data, $paths);
+  
+      if ($old_style) {
+          my ( $verbose, $safe );
+          ( $paths, $verbose, $safe ) = @_;
+          $data->{verbose} = $verbose;
+          $data->{safe} = defined $safe ? $safe : 0;
+  
+          if ( defined($paths) and length($paths) ) {
+              $paths = [$paths] unless UNIVERSAL::isa( $paths, 'ARRAY' );
+          }
+          else {
+              _carp("No root path(s) specified\n");
+              return 0;
+          }
+      }
+      else {
+          my %args_permitted = map { $_ => 1 } ( qw|
+              error
+              keep_root
+              result
+              safe
+              verbose
+          | );
+          my @bad_args = ();
+          my $arg = pop @_;
+          for my $k (sort keys %{$arg}) {
+              if (! $args_permitted{$k}) {
+                  push @bad_args, $k;
+              }
+              else {
+                  $data->{$k} = $arg->{$k};
+              }
+          }
+          _carp("Unrecognized option(s) passed to remove_tree(): @bad_args")
+              if @bad_args;
+          ${ $data->{error} }  = [] if exists $data->{error};
+          ${ $data->{result} } = [] if exists $data->{result};
+  
+          # Wouldn't it make sense to do some validation on @_ before assigning
+          # to $paths here?
+          # In the $old_style case we guarantee that each path is both defined
+          # and non-empty.  We don't check that here, which means we have to
+          # check it later in the first condition in this line:
+          #     if ( $ortho_root_length && _is_subdir( $ortho_root, $ortho_cwd ) ) {
+          # Granted, that would be a change in behavior for the two
+          # non-old-style interfaces.
+  
+          $paths = [@_];
+      }
+  
+      $data->{prefix} = '';
+      $data->{depth}  = 0;
+  
+      my @clean_path;
+      $data->{cwd} = getcwd() or do {
+          _error( $data, "cannot fetch initial working directory" );
+          return 0;
+      };
+      for ( $data->{cwd} ) { /\A(.*)\Z/s; $_ = $1 }    # untaint
+  
+      for my $p (@$paths) {
+  
+          # need to fixup case and map \ to / on Windows
+          my $ortho_root = _IS_MSWIN32 ? _slash_lc($p) : $p;
+          my $ortho_cwd =
+            _IS_MSWIN32 ? _slash_lc( $data->{cwd} ) : $data->{cwd};
+          my $ortho_root_length = length($ortho_root);
+          $ortho_root_length-- if _IS_VMS;   # don't compare '.' with ']'
+          if ( $ortho_root_length && _is_subdir( $ortho_root, $ortho_cwd ) ) {
+              local $! = 0;
+              _error( $data, "cannot remove path when cwd is $data->{cwd}", $p );
+              next;
+          }
+  
+          if (_IS_MACOS) {
+              $p = ":$p" unless $p =~ /:/;
+              $p .= ":" unless $p =~ /:\z/;
+          }
+          elsif ( _IS_MSWIN32 ) {
+              $p =~ s{[/\\]\z}{};
+          }
+          else {
+              $p =~ s{/\z}{};
+          }
+          push @clean_path, $p;
+      }
+  
+      @{$data}{qw(device inode)} = ( lstat $data->{cwd} )[ 0, 1 ] or do {
+          _error( $data, "cannot stat initial working directory", $data->{cwd} );
+          return 0;
+      };
+  
+      return _rmtree( $data, \@clean_path );
+  }
+  
+  sub _rmtree {
+      my $data   = shift;
+      my $paths = shift;
+  
+      my $count  = 0;
+      my $curdir = File::Spec->curdir();
+      my $updir  = File::Spec->updir();
+  
+      my ( @files, $root );
+    ROOT_DIR:
+      foreach my $root (@$paths) {
+  
+          # since we chdir into each directory, it may not be obvious
+          # to figure out where we are if we generate a message about
+          # a file name. We therefore construct a semi-canonical
+          # filename, anchored from the directory being unlinked (as
+          # opposed to being truly canonical, anchored from the root (/).
+  
+          my $canon =
+            $data->{prefix}
+            ? File::Spec->catfile( $data->{prefix}, $root )
+            : $root;
+  
+          my ( $ldev, $lino, $perm ) = ( lstat $root )[ 0, 1, 2 ]
+            or next ROOT_DIR;
+  
+          if ( -d _ ) {
+              $root = VMS::Filespec::vmspath( VMS::Filespec::pathify($root) )
+                if _IS_VMS;
+  
+              if ( !chdir($root) ) {
+  
+                  # see if we can escalate privileges to get in
+                  # (e.g. funny protection mask such as -w- instead of rwx)
+                  # This uses fchmod to avoid traversing outside of the proper
+                  # location (CVE-2017-6512)
+                  my $root_fh;
+                  if (open($root_fh, '<', $root)) {
+                      my ($fh_dev, $fh_inode) = (stat $root_fh )[0,1];
+                      $perm &= oct '7777';
+                      my $nperm = $perm | oct '700';
+                      local $@;
+                      if (
+                          !(
+                              $data->{safe}
+                             or $nperm == $perm
+                             or !-d _
+                             or $fh_dev ne $ldev
+                             or $fh_inode ne $lino
+                             or eval { chmod( $nperm, $root_fh ) }
+                          )
+                        )
+                      {
+                          _error( $data,
+                              "cannot make child directory read-write-exec", $canon );
+                          next ROOT_DIR;
+                      }
+                      close $root_fh;
+                  }
+                  if ( !chdir($root) ) {
+                      _error( $data, "cannot chdir to child", $canon );
+                      next ROOT_DIR;
+                  }
+              }
+  
+              my ( $cur_dev, $cur_inode, $perm ) = ( stat $curdir )[ 0, 1, 2 ]
+                or do {
+                  _error( $data, "cannot stat current working directory", $canon );
+                  next ROOT_DIR;
+                };
+  
+              if (_NEED_STAT_CHECK) {
+                  ( $ldev eq $cur_dev and $lino eq $cur_inode )
+                    or _croak(
+  "directory $canon changed before chdir, expected dev=$ldev ino=$lino, actual dev=$cur_dev ino=$cur_inode, aborting."
+                    );
+              }
+  
+              $perm &= oct '7777';    # don't forget setuid, setgid, sticky bits
+              my $nperm = $perm | oct '700';
+  
+              # notabene: 0700 is for making readable in the first place,
+              # it's also intended to change it to writable in case we have
+              # to recurse in which case we are better than rm -rf for
+              # subtrees with strange permissions
+  
+              if (
+                  !(
+                         $data->{safe}
+                      or $nperm == $perm
+                      or chmod( $nperm, $curdir )
+                  )
+                )
+              {
+                  _error( $data, "cannot make directory read+writeable", $canon );
+                  $nperm = $perm;
+              }
+  
+              my $d;
+              $d = gensym() if $] < 5.006;
+              if ( !opendir $d, $curdir ) {
+                  _error( $data, "cannot opendir", $canon );
+                  @files = ();
+              }
+              else {
+                  if ( !defined ${^TAINT} or ${^TAINT} ) {
+                      # Blindly untaint dir names if taint mode is active
+                      @files = map { /\A(.*)\z/s; $1 } readdir $d;
+                  }
+                  else {
+                      @files = readdir $d;
+                  }
+                  closedir $d;
+              }
+  
+              if (_IS_VMS) {
+  
+                  # Deleting large numbers of files from VMS Files-11
+                  # filesystems is faster if done in reverse ASCIIbetical order.
+                  # include '.' to '.;' from blead patch #31775
+                  @files = map { $_ eq '.' ? '.;' : $_ } reverse @files;
+              }
+  
+              @files = grep { $_ ne $updir and $_ ne $curdir } @files;
+  
+              if (@files) {
+  
+                  # remove the contained files before the directory itself
+                  my $narg = {%$data};
+                  @{$narg}{qw(device inode cwd prefix depth)} =
+                    ( $cur_dev, $cur_inode, $updir, $canon, $data->{depth} + 1 );
+                  $count += _rmtree( $narg, \@files );
+              }
+  
+              # restore directory permissions of required now (in case the rmdir
+              # below fails), while we are still in the directory and may do so
+              # without a race via '.'
+              if ( $nperm != $perm and not chmod( $perm, $curdir ) ) {
+                  _error( $data, "cannot reset chmod", $canon );
+              }
+  
+              # don't leave the client code in an unexpected directory
+              chdir( $data->{cwd} )
+                or
+                _croak("cannot chdir to $data->{cwd} from $canon: $!, aborting.");
+  
+              # ensure that a chdir upwards didn't take us somewhere other
+              # than we expected (see CVE-2002-0435)
+              ( $cur_dev, $cur_inode ) = ( stat $curdir )[ 0, 1 ]
+                or _croak(
+                  "cannot stat prior working directory $data->{cwd}: $!, aborting."
+                );
+  
+              if (_NEED_STAT_CHECK) {
+                  ( $data->{device} eq $cur_dev and $data->{inode} eq $cur_inode )
+                    or _croak(  "previous directory $data->{cwd} "
+                              . "changed before entering $canon, "
+                              . "expected dev=$ldev ino=$lino, "
+                              . "actual dev=$cur_dev ino=$cur_inode, aborting."
+                    );
+              }
+  
+              if ( $data->{depth} or !$data->{keep_root} ) {
+                  if ( $data->{safe}
+                      && ( _IS_VMS
+                          ? !&VMS::Filespec::candelete($root)
+                          : !-w $root ) )
+                  {
+                      print "skipped $root\n" if $data->{verbose};
+                      next ROOT_DIR;
+                  }
+                  if ( _FORCE_WRITABLE and !chmod $perm | oct '700', $root ) {
+                      _error( $data, "cannot make directory writeable", $canon );
+                  }
+                  print "rmdir $root\n" if $data->{verbose};
+                  if ( rmdir $root ) {
+                      push @{ ${ $data->{result} } }, $root if $data->{result};
+                      ++$count;
+                  }
+                  else {
+                      _error( $data, "cannot remove directory", $canon );
+                      if (
+                          _FORCE_WRITABLE
+                          && !chmod( $perm,
+                              ( _IS_VMS ? VMS::Filespec::fileify($root) : $root )
+                          )
+                        )
+                      {
+                          _error(
+                              $data,
+                              sprintf( "cannot restore permissions to 0%o",
+                                  $perm ),
+                              $canon
+                          );
+                      }
+                  }
+              }
+          }
+          else {
+              # not a directory
+              $root = VMS::Filespec::vmsify("./$root")
+                if _IS_VMS
+                && !File::Spec->file_name_is_absolute($root)
+                && ( $root !~ m/(?<!\^)[\]>]+/ );    # not already in VMS syntax
+  
+              if (
+                  $data->{safe}
+                  && (
+                      _IS_VMS
+                      ? !&VMS::Filespec::candelete($root)
+                      : !( -l $root || -w $root )
+                  )
+                )
+              {
+                  print "skipped $root\n" if $data->{verbose};
+                  next ROOT_DIR;
+              }
+  
+              my $nperm = $perm & oct '7777' | oct '600';
+              if (    _FORCE_WRITABLE
+                  and $nperm != $perm
+                  and not chmod $nperm, $root )
+              {
+                  _error( $data, "cannot make file writeable", $canon );
+              }
+              print "unlink $canon\n" if $data->{verbose};
+  
+              # delete all versions under VMS
+              for ( ; ; ) {
+                  if ( unlink $root ) {
+                      push @{ ${ $data->{result} } }, $root if $data->{result};
+                  }
+                  else {
+                      _error( $data, "cannot unlink file", $canon );
+                      _FORCE_WRITABLE and chmod( $perm, $root )
+                        or _error( $data,
+                          sprintf( "cannot restore permissions to 0%o", $perm ),
+                          $canon );
+                      last;
+                  }
+                  ++$count;
+                  last unless _IS_VMS && lstat $root;
+              }
+          }
+      }
+      return $count;
+  }
+  
+  sub _slash_lc {
+  
+      # fix up slashes and case on MSWin32 so that we can determine that
+      # c:\path\to\dir is underneath C:/Path/To
+      my $path = shift;
+      $path =~ tr{\\}{/};
+      return lc($path);
+  }
+  
+  1;
+  
+  __END__
+  
+  =head1 NAME
+  
+  File::Path - Create or remove directory trees
+  
+  =head1 VERSION
+  
+  2.15 - released June 07 2017.
+  
+  =head1 SYNOPSIS
+  
+      use File::Path qw(make_path remove_tree);
+  
+      @created = make_path('foo/bar/baz', '/zug/zwang');
+      @created = make_path('foo/bar/baz', '/zug/zwang', {
+          verbose => 1,
+          mode => 0711,
+      });
+      make_path('foo/bar/baz', '/zug/zwang', {
+          chmod => 0777,
+      });
+  
+      $removed_count = remove_tree('foo/bar/baz', '/zug/zwang', {
+          verbose => 1,
+          error  => \my $err_list,
+          safe => 1,
+      });
+  
+      # legacy (interface promoted before v2.00)
+      @created = mkpath('/foo/bar/baz');
+      @created = mkpath('/foo/bar/baz', 1, 0711);
+      @created = mkpath(['/foo/bar/baz', 'blurfl/quux'], 1, 0711);
+      $removed_count = rmtree('foo/bar/baz', 1, 1);
+      $removed_count = rmtree(['foo/bar/baz', 'blurfl/quux'], 1, 1);
+  
+      # legacy (interface promoted before v2.06)
+      @created = mkpath('foo/bar/baz', '/zug/zwang', { verbose => 1, mode => 0711 });
+      $removed_count = rmtree('foo/bar/baz', '/zug/zwang', { verbose => 1, mode => 0711 });
+  
+  =head1 DESCRIPTION
+  
+  This module provides a convenient way to create directories of
+  arbitrary depth and to delete an entire directory subtree from the
+  filesystem.
+  
+  The following functions are provided:
+  
+  =over
+  
+  =item make_path( $dir1, $dir2, .... )
+  
+  =item make_path( $dir1, $dir2, ...., \%opts )
+  
+  The C<make_path> function creates the given directories if they don't
+  exist before, much like the Unix command C<mkdir -p>.
+  
+  The function accepts a list of directories to be created. Its
+  behaviour may be tuned by an optional hashref appearing as the last
+  parameter on the call.
+  
+  The function returns the list of directories actually created during
+  the call; in scalar context the number of directories created.
+  
+  The following keys are recognised in the option hash:
+  
+  =over
+  
+  =item mode => $num
+  
+  The numeric permissions mode to apply to each created directory
+  (defaults to C<0777>), to be modified by the current C<umask>. If the
+  directory already exists (and thus does not need to be created),
+  the permissions will not be modified.
+  
+  C<mask> is recognised as an alias for this parameter.
+  
+  =item chmod => $num
+  
+  Takes a numeric mode to apply to each created directory (not
+  modified by the current C<umask>). If the directory already exists
+  (and thus does not need to be created), the permissions will
+  not be modified.
+  
+  =item verbose => $bool
+  
+  If present, will cause C<make_path> to print the name of each directory
+  as it is created. By default nothing is printed.
+  
+  =item error => \$err
+  
+  If present, it should be a reference to a scalar.
+  This scalar will be made to reference an array, which will
+  be used to store any errors that are encountered.  See the L</"ERROR
+  HANDLING"> section for more information.
+  
+  If this parameter is not used, certain error conditions may raise
+  a fatal error that will cause the program to halt, unless trapped
+  in an C<eval> block.
+  
+  =item owner => $owner
+  
+  =item user => $owner
+  
+  =item uid => $owner
+  
+  If present, will cause any created directory to be owned by C<$owner>.
+  If the value is numeric, it will be interpreted as a uid; otherwise a
+  username is assumed. An error will be issued if the username cannot be
+  mapped to a uid, the uid does not exist or the process lacks the
+  privileges to change ownership.
+  
+  Ownership of directories that already exist will not be changed.
+  
+  C<user> and C<uid> are aliases of C<owner>.
+  
+  =item group => $group
+  
+  If present, will cause any created directory to be owned by the group
+  C<$group>.  If the value is numeric, it will be interpreted as a gid;
+  otherwise a group name is assumed. An error will be issued if the
+  group name cannot be mapped to a gid, the gid does not exist or the
+  process lacks the privileges to change group ownership.
+  
+  Group ownership of directories that already exist will not be changed.
+  
+      make_path '/var/tmp/webcache', {owner=>'nobody', group=>'nogroup'};
+  
+  =back
+  
+  =item mkpath( $dir )
+  
+  =item mkpath( $dir, $verbose, $mode )
+  
+  =item mkpath( [$dir1, $dir2,...], $verbose, $mode )
+  
+  =item mkpath( $dir1, $dir2,..., \%opt )
+  
+  The C<mkpath()> function provide the legacy interface of
+  C<make_path()> with a different interpretation of the arguments
+  passed.  The behaviour and return value of the function is otherwise
+  identical to C<make_path()>.
+  
+  =item remove_tree( $dir1, $dir2, .... )
+  
+  =item remove_tree( $dir1, $dir2, ...., \%opts )
+  
+  The C<remove_tree> function deletes the given directories and any
+  files and subdirectories they might contain, much like the Unix
+  command C<rm -rf> or the Windows commands C<rmdir /s> and C<rd /s>.
+  
+  The function accepts a list of directories to be removed. (In point of fact,
+  it will also accept filesystem entries which are not directories, such as
+  regular files and symlinks.  But, as its name suggests, its intent is to
+  remove trees rather than individual files.)
+  
+  C<remove_tree()>'s behaviour may be tuned by an optional hashref
+  appearing as the last parameter on the call.  If an empty string is
+  passed to C<remove_tree>, an error will occur.
+  
+  B<NOTE:>  For security reasons, we strongly advise use of the
+  hashref-as-final-argument syntax -- specifically, with a setting of the C<safe>
+  element to a true value.
+  
+      remove_tree( $dir1, $dir2, ....,
+          {
+              safe => 1,
+              ...         # other key-value pairs
+          },
+      );
+  
+  The function returns the number of files successfully deleted.
+  
+  The following keys are recognised in the option hash:
+  
+  =over
+  
+  =item verbose => $bool
+  
+  If present, will cause C<remove_tree> to print the name of each file as
+  it is unlinked. By default nothing is printed.
+  
+  =item safe => $bool
+  
+  When set to a true value, will cause C<remove_tree> to skip the files
+  for which the process lacks the required privileges needed to delete
+  files, such as delete privileges on VMS. In other words, the code
+  will make no attempt to alter file permissions. Thus, if the process
+  is interrupted, no filesystem object will be left in a more
+  permissive mode.
+  
+  =item keep_root => $bool
+  
+  When set to a true value, will cause all files and subdirectories
+  to be removed, except the initially specified directories. This comes
+  in handy when cleaning out an application's scratch directory.
+  
+      remove_tree( '/tmp', {keep_root => 1} );
+  
+  =item result => \$res
+  
+  If present, it should be a reference to a scalar.
+  This scalar will be made to reference an array, which will
+  be used to store all files and directories unlinked
+  during the call. If nothing is unlinked, the array will be empty.
+  
+      remove_tree( '/tmp', {result => \my $list} );
+      print "unlinked $_\n" for @$list;
+  
+  This is a useful alternative to the C<verbose> key.
+  
+  =item error => \$err
+  
+  If present, it should be a reference to a scalar.
+  This scalar will be made to reference an array, which will
+  be used to store any errors that are encountered.  See the L</"ERROR
+  HANDLING"> section for more information.
+  
+  Removing things is a much more dangerous proposition than
+  creating things. As such, there are certain conditions that
+  C<remove_tree> may encounter that are so dangerous that the only
+  sane action left is to kill the program.
+  
+  Use C<error> to trap all that is reasonable (problems with
+  permissions and the like), and let it die if things get out
+  of hand. This is the safest course of action.
+  
+  =back
+  
+  =item rmtree( $dir )
+  
+  =item rmtree( $dir, $verbose, $safe )
+  
+  =item rmtree( [$dir1, $dir2,...], $verbose, $safe )
+  
+  =item rmtree( $dir1, $dir2,..., \%opt )
+  
+  The C<rmtree()> function provide the legacy interface of
+  C<remove_tree()> with a different interpretation of the arguments
+  passed. The behaviour and return value of the function is otherwise
+  identical to C<remove_tree()>.
+  
+  B<NOTE:>  For security reasons, we strongly advise use of the
+  hashref-as-final-argument syntax, specifically with a setting of the C<safe>
+  element to a true value.
+  
+      rmtree( $dir1, $dir2, ....,
+          {
+              safe => 1,
+              ...         # other key-value pairs
+          },
+      );
+  
+  =back
+  
+  =head2 ERROR HANDLING
+  
+  =over 4
+  
+  =item B<NOTE:>
+  
+  The following error handling mechanism is consistent throughout all
+  code paths EXCEPT in cases where the ROOT node is nonexistent.  In
+  version 2.11 the maintainers attempted to rectify this inconsistency
+  but too many downstream modules encountered problems.  In such case,
+  if you require root node evaluation or error checking prior to calling
+  C<make_path> or C<remove_tree>, you should take additional precautions.
+  
+  =back
+  
+  If C<make_path> or C<remove_tree> encounters an error, a diagnostic
+  message will be printed to C<STDERR> via C<carp> (for non-fatal
+  errors) or via C<croak> (for fatal errors).
+  
+  If this behaviour is not desirable, the C<error> attribute may be
+  used to hold a reference to a variable, which will be used to store
+  the diagnostics. The variable is made a reference to an array of hash
+  references.  Each hash contain a single key/value pair where the key
+  is the name of the file, and the value is the error message (including
+  the contents of C<$!> when appropriate).  If a general error is
+  encountered the diagnostic key will be empty.
+  
+  An example usage looks like:
+  
+    remove_tree( 'foo/bar', 'bar/rat', {error => \my $err} );
+    if ($err && @$err) {
+        for my $diag (@$err) {
+            my ($file, $message) = %$diag;
+            if ($file eq '') {
+                print "general error: $message\n";
+            }
+            else {
+                print "problem unlinking $file: $message\n";
+            }
+        }
+    }
+    else {
+        print "No error encountered\n";
+    }
+  
+  Note that if no errors are encountered, C<$err> will reference an
+  empty array.  This means that C<$err> will always end up TRUE; so you
+  need to test C<@$err> to determine if errors occurred.
+  
+  =head2 NOTES
+  
+  C<File::Path> blindly exports C<mkpath> and C<rmtree> into the
+  current namespace. These days, this is considered bad style, but
+  to change it now would break too much code. Nonetheless, you are
+  invited to specify what it is you are expecting to use:
+  
+    use File::Path 'rmtree';
+  
+  The routines C<make_path> and C<remove_tree> are B<not> exported
+  by default. You must specify which ones you want to use.
+  
+    use File::Path 'remove_tree';
+  
+  Note that a side-effect of the above is that C<mkpath> and C<rmtree>
+  are no longer exported at all. This is due to the way the C<Exporter>
+  module works. If you are migrating a codebase to use the new
+  interface, you will have to list everything explicitly. But that's
+  just good practice anyway.
+  
+    use File::Path qw(remove_tree rmtree);
+  
+  =head3 API CHANGES
+  
+  The API was changed in the 2.0 branch. For a time, C<mkpath> and
+  C<rmtree> tried, unsuccessfully, to deal with the two different
+  calling mechanisms. This approach was considered a failure.
+  
+  The new semantics are now only available with C<make_path> and
+  C<remove_tree>. The old semantics are only available through
+  C<mkpath> and C<rmtree>. Users are strongly encouraged to upgrade
+  to at least 2.08 in order to avoid surprises.
+  
+  =head3 SECURITY CONSIDERATIONS
+  
+  There were race conditions in the 1.x implementations of File::Path's
+  C<rmtree> function (although sometimes patched depending on the OS
+  distribution or platform). The 2.0 version contains code to avoid the
+  problem mentioned in CVE-2002-0435.
+  
+  See the following pages for more information:
+  
+      http://bugs.debian.org/cgi-bin/bugreport.cgi?bug=286905
+      http://www.nntp.perl.org/group/perl.perl5.porters/2005/01/msg97623.html
+      http://www.debian.org/security/2005/dsa-696
+  
+  Additionally, unless the C<safe> parameter is set (or the
+  third parameter in the traditional interface is TRUE), should a
+  C<remove_tree> be interrupted, files that were originally in read-only
+  mode may now have their permissions set to a read-write (or "delete
+  OK") mode.
+  
+  The following CVE reports were previously filed against File-Path and are
+  believed to have been addressed:
+  
+  =over 4
+  
+  =item * L<http://cve.circl.lu/cve/CVE-2004-0452>
+  
+  =item * L<http://cve.circl.lu/cve/CVE-2005-0448>
+  
+  =back
+  
+  In February 2017 the cPanel Security Team reported an additional vulnerability
+  in File-Path.  The C<chmod()> logic to make directories traversable can be
+  abused to set the mode on an attacker-chosen file to an attacker-chosen value.
+  This is due to the time-of-check-to-time-of-use (TOCTTOU) race condition
+  (L<https://en.wikipedia.org/wiki/Time_of_check_to_time_of_use>) between the
+  C<stat()> that decides the inode is a directory and the C<chmod()> that tries
+  to make it user-rwx.  CPAN versions 2.13 and later incorporate a patch
+  provided by John Lightsey to address this problem.  This vulnerability has
+  been reported as CVE-2017-6512.
+  
+  =head1 DIAGNOSTICS
+  
+  FATAL errors will cause the program to halt (C<croak>), since the
+  problem is so severe that it would be dangerous to continue. (This
+  can always be trapped with C<eval>, but it's not a good idea. Under
+  the circumstances, dying is the best thing to do).
+  
+  SEVERE errors may be trapped using the modern interface. If the
+  they are not trapped, or if the old interface is used, such an error
+  will cause the program will halt.
+  
+  All other errors may be trapped using the modern interface, otherwise
+  they will be C<carp>ed about. Program execution will not be halted.
+  
+  =over 4
+  
+  =item mkdir [path]: [errmsg] (SEVERE)
+  
+  C<make_path> was unable to create the path. Probably some sort of
+  permissions error at the point of departure or insufficient resources
+  (such as free inodes on Unix).
+  
+  =item No root path(s) specified
+  
+  C<make_path> was not given any paths to create. This message is only
+  emitted if the routine is called with the traditional interface.
+  The modern interface will remain silent if given nothing to do.
+  
+  =item No such file or directory
+  
+  On Windows, if C<make_path> gives you this warning, it may mean that
+  you have exceeded your filesystem's maximum path length.
+  
+  =item cannot fetch initial working directory: [errmsg]
+  
+  C<remove_tree> attempted to determine the initial directory by calling
+  C<Cwd::getcwd>, but the call failed for some reason. No attempt
+  will be made to delete anything.
+  
+  =item cannot stat initial working directory: [errmsg]
+  
+  C<remove_tree> attempted to stat the initial directory (after having
+  successfully obtained its name via C<getcwd>), however, the call
+  failed for some reason. No attempt will be made to delete anything.
+  
+  =item cannot chdir to [dir]: [errmsg]
+  
+  C<remove_tree> attempted to set the working directory in order to
+  begin deleting the objects therein, but was unsuccessful. This is
+  usually a permissions issue. The routine will continue to delete
+  other things, but this directory will be left intact.
+  
+  =item directory [dir] changed before chdir, expected dev=[n] ino=[n], actual dev=[n] ino=[n], aborting. (FATAL)
+  
+  C<remove_tree> recorded the device and inode of a directory, and then
+  moved into it. It then performed a C<stat> on the current directory
+  and detected that the device and inode were no longer the same. As
+  this is at the heart of the race condition problem, the program
+  will die at this point.
+  
+  =item cannot make directory [dir] read+writeable: [errmsg]
+  
+  C<remove_tree> attempted to change the permissions on the current directory
+  to ensure that subsequent unlinkings would not run into problems,
+  but was unable to do so. The permissions remain as they were, and
+  the program will carry on, doing the best it can.
+  
+  =item cannot read [dir]: [errmsg]
+  
+  C<remove_tree> tried to read the contents of the directory in order
+  to acquire the names of the directory entries to be unlinked, but
+  was unsuccessful. This is usually a permissions issue. The
+  program will continue, but the files in this directory will remain
+  after the call.
+  
+  =item cannot reset chmod [dir]: [errmsg]
+  
+  C<remove_tree>, after having deleted everything in a directory, attempted
+  to restore its permissions to the original state but failed. The
+  directory may wind up being left behind.
+  
+  =item cannot remove [dir] when cwd is [dir]
+  
+  The current working directory of the program is F</some/path/to/here>
+  and you are attempting to remove an ancestor, such as F</some/path>.
+  The directory tree is left untouched.
+  
+  The solution is to C<chdir> out of the child directory to a place
+  outside the directory tree to be removed.
+  
+  =item cannot chdir to [parent-dir] from [child-dir]: [errmsg], aborting. (FATAL)
+  
+  C<remove_tree>, after having deleted everything and restored the permissions
+  of a directory, was unable to chdir back to the parent. The program
+  halts to avoid a race condition from occurring.
+  
+  =item cannot stat prior working directory [dir]: [errmsg], aborting. (FATAL)
+  
+  C<remove_tree> was unable to stat the parent directory after having returned
+  from the child. Since there is no way of knowing if we returned to
+  where we think we should be (by comparing device and inode) the only
+  way out is to C<croak>.
+  
+  =item previous directory [parent-dir] changed before entering [child-dir], expected dev=[n] ino=[n], actual dev=[n] ino=[n], aborting. (FATAL)
+  
+  When C<remove_tree> returned from deleting files in a child directory, a
+  check revealed that the parent directory it returned to wasn't the one
+  it started out from. This is considered a sign of malicious activity.
+  
+  =item cannot make directory [dir] writeable: [errmsg]
+  
+  Just before removing a directory (after having successfully removed
+  everything it contained), C<remove_tree> attempted to set the permissions
+  on the directory to ensure it could be removed and failed. Program
+  execution continues, but the directory may possibly not be deleted.
+  
+  =item cannot remove directory [dir]: [errmsg]
+  
+  C<remove_tree> attempted to remove a directory, but failed. This may be because
+  some objects that were unable to be removed remain in the directory, or
+  it could be a permissions issue. The directory will be left behind.
+  
+  =item cannot restore permissions of [dir] to [0nnn]: [errmsg]
+  
+  After having failed to remove a directory, C<remove_tree> was unable to
+  restore its permissions from a permissive state back to a possibly
+  more restrictive setting. (Permissions given in octal).
+  
+  =item cannot make file [file] writeable: [errmsg]
+  
+  C<remove_tree> attempted to force the permissions of a file to ensure it
+  could be deleted, but failed to do so. It will, however, still attempt
+  to unlink the file.
+  
+  =item cannot unlink file [file]: [errmsg]
+  
+  C<remove_tree> failed to remove a file. Probably a permissions issue.
+  
+  =item cannot restore permissions of [file] to [0nnn]: [errmsg]
+  
+  After having failed to remove a file, C<remove_tree> was also unable
+  to restore the permissions on the file to a possibly less permissive
+  setting. (Permissions given in octal).
+  
+  =item unable to map [owner] to a uid, ownership not changed");
+  
+  C<make_path> was instructed to give the ownership of created
+  directories to the symbolic name [owner], but C<getpwnam> did
+  not return the corresponding numeric uid. The directory will
+  be created, but ownership will not be changed.
+  
+  =item unable to map [group] to a gid, group ownership not changed
+  
+  C<make_path> was instructed to give the group ownership of created
+  directories to the symbolic name [group], but C<getgrnam> did
+  not return the corresponding numeric gid. The directory will
+  be created, but group ownership will not be changed.
+  
+  =back
+  
+  =head1 SEE ALSO
+  
+  =over 4
+  
+  =item *
+  
+  L<File::Remove>
+  
+  Allows files and directories to be moved to the Trashcan/Recycle
+  Bin (where they may later be restored if necessary) if the operating
+  system supports such functionality. This feature may one day be
+  made available directly in C<File::Path>.
+  
+  =item *
+  
+  L<File::Find::Rule>
+  
+  When removing directory trees, if you want to examine each file to
+  decide whether to delete it (and possibly leaving large swathes
+  alone), F<File::Find::Rule> offers a convenient and flexible approach
+  to examining directory trees.
+  
+  =back
+  
+  =head1 BUGS AND LIMITATIONS
+  
+  The following describes F<File::Path> limitations and how to report bugs.
+  
+  =head2 MULTITHREADED APPLICATIONS
+  
+  F<File::Path> C<rmtree> and C<remove_tree> will not work with
+  multithreaded applications due to its use of C<chdir>.  At this time,
+  no warning or error is generated in this situation.  You will
+  certainly encounter unexpected results.
+  
+  The implementation that surfaces this limitation will not be changed. See the
+  F<File::Path::Tiny> module for functionality similar to F<File::Path> but which does
+  not C<chdir>.
+  
+  =head2 NFS Mount Points
+  
+  F<File::Path> is not responsible for triggering the automounts, mirror mounts,
+  and the contents of network mounted filesystems.  If your NFS implementation
+  requires an action to be performed on the filesystem in order for
+  F<File::Path> to perform operations, it is strongly suggested you assure
+  filesystem availability by reading the root of the mounted filesystem.
+  
+  =head2 REPORTING BUGS
+  
+  Please report all bugs on the RT queue, either via the web interface:
+  
+  L<http://rt.cpan.org/NoAuth/Bugs.html?Dist=File-Path>
+  
+  or by email:
+  
+      bug-File-Path@rt.cpan.org
+  
+  In either case, please B<attach> patches to the bug report rather than
+  including them inline in the web post or the body of the email.
+  
+  You can also send pull requests to the Github repository:
+  
+  L<https://github.com/rpcme/File-Path>
+  
+  =head1 ACKNOWLEDGEMENTS
+  
+  Paul Szabo identified the race condition originally, and Brendan
+  O'Dea wrote an implementation for Debian that addressed the problem.
+  That code was used as a basis for the current code. Their efforts
+  are greatly appreciated.
+  
+  Gisle Aas made a number of improvements to the documentation for
+  2.07 and his advice and assistance is also greatly appreciated.
+  
+  =head1 AUTHORS
+  
+  Prior authors and maintainers: Tim Bunce, Charles Bailey, and
+  David Landgren <F<david@landgren.net>>.
+  
+  Current maintainers are Richard Elberger <F<riche@cpan.org>> and
+  James (Jim) Keenan <F<jkeenan@cpan.org>>.
+  
+  =head1 CONTRIBUTORS
+  
+  Contributors to File::Path, in alphabetical order by first name.
+  
+  =over 1
+  
+  =item <F<bulkdd@cpan.org>>
+  
+  =item Charlie Gonzalez <F<itcharlie@cpan.org>>
+  
+  =item Craig A. Berry <F<craigberry@mac.com>>
+  
+  =item James E Keenan <F<jkeenan@cpan.org>>
+  
+  =item John Lightsey <F<john@perlsec.org>>
+  
+  =item Nigel Horne <F<njh@bandsman.co.uk>>
+  
+  =item Richard Elberger <F<riche@cpan.org>>
+  
+  =item Ryan Yee <F<ryee@cpan.org>>
+  
+  =item Skye Shaw <F<shaw@cpan.org>>
+  
+  =item Tom Lutz <F<tommylutz@gmail.com>>
+  
+  =item Will Sheppard <F<willsheppard@github>>
+  
+  =back
+  
+  =head1 COPYRIGHT
+  
+  This module is copyright (C) Charles Bailey, Tim Bunce, David Landgren,
+  James Keenan and Richard Elberger 1995-2017. All rights reserved.
+  
+  =head1 LICENSE
+  
+  This library is free software; you can redistribute it and/or modify
+  it under the same terms as Perl itself.
+  
+  =cut
+FILE_PATH
+
 $fatpacked{"File/Which.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'FILE_WHICH';
   package File::Which;
   
@@ -1722,7 +3862,7 @@ $fatpacked{"File/Which.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'FILE
   use File::Spec ();
   
   # ABSTRACT: Perl implementation of the which utility as an API
-  our $VERSION = '1.21'; # VERSION
+  our $VERSION = '1.22'; # VERSION
   
   
   our @ISA       = 'Exporter';
@@ -1732,7 +3872,7 @@ $fatpacked{"File/Which.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'FILE
   use constant IS_VMS => ($^O eq 'VMS');
   use constant IS_MAC => ($^O eq 'MacOS');
   use constant IS_DOS => ($^O eq 'MSWin32' or $^O eq 'dos' or $^O eq 'os2');
-  use constant IS_CYG => ($^O eq 'cygwin');
+  use constant IS_CYG => ($^O eq 'cygwin' || $^O eq 'msys');
   
   # For Win32 systems, stores the extensions used for
   # executable files
@@ -1862,7 +4002,7 @@ $fatpacked{"File/Which.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'FILE
   
   =head1 VERSION
   
-  version 1.21
+  version 1.22
   
   =head1 SYNOPSIS
   
@@ -2051,6 +4191,2776 @@ $fatpacked{"File/Which.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'FILE
   
   =cut
 FILE_WHICH
+
+$fatpacked{"Getopt/Long.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'GETOPT_LONG';
+  #! perl
+  
+  # Getopt::Long.pm -- Universal options parsing
+  # Author          : Johan Vromans
+  # Created On      : Tue Sep 11 15:00:12 1990
+  # Last Modified By: Johan Vromans
+  # Last Modified On: Sat May 27 12:11:39 2017
+  # Update Count    : 1715
+  # Status          : Released
+  
+  ################ Module Preamble ################
+  
+  use 5.004;
+  
+  use strict;
+  use warnings;
+  
+  package Getopt::Long;
+  
+  use vars qw($VERSION);
+  $VERSION        =  2.50;
+  # For testing versions only.
+  use vars qw($VERSION_STRING);
+  $VERSION_STRING = "2.50";
+  
+  use Exporter;
+  use vars qw(@ISA @EXPORT @EXPORT_OK);
+  @ISA = qw(Exporter);
+  
+  # Exported subroutines.
+  sub GetOptions(@);		# always
+  sub GetOptionsFromArray(@);	# on demand
+  sub GetOptionsFromString(@);	# on demand
+  sub Configure(@);		# on demand
+  sub HelpMessage(@);		# on demand
+  sub VersionMessage(@);		# in demand
+  
+  BEGIN {
+      # Init immediately so their contents can be used in the 'use vars' below.
+      @EXPORT    = qw(&GetOptions $REQUIRE_ORDER $PERMUTE $RETURN_IN_ORDER);
+      @EXPORT_OK = qw(&HelpMessage &VersionMessage &Configure
+  		    &GetOptionsFromArray &GetOptionsFromString);
+  }
+  
+  # User visible variables.
+  use vars @EXPORT, @EXPORT_OK;
+  use vars qw($error $debug $major_version $minor_version);
+  # Deprecated visible variables.
+  use vars qw($autoabbrev $getopt_compat $ignorecase $bundling $order
+  	    $passthrough);
+  # Official invisible variables.
+  use vars qw($genprefix $caller $gnu_compat $auto_help $auto_version $longprefix);
+  
+  # Really invisible variables.
+  my $bundling_values;
+  
+  # Public subroutines.
+  sub config(@);			# deprecated name
+  
+  # Private subroutines.
+  sub ConfigDefaults();
+  sub ParseOptionSpec($$);
+  sub OptCtl($);
+  sub FindOption($$$$$);
+  sub ValidValue ($$$$$);
+  
+  ################ Local Variables ################
+  
+  # $requested_version holds the version that was mentioned in the 'use'
+  # or 'require', if any. It can be used to enable or disable specific
+  # features.
+  my $requested_version = 0;
+  
+  ################ Resident subroutines ################
+  
+  sub ConfigDefaults() {
+      # Handle POSIX compliancy.
+      if ( defined $ENV{"POSIXLY_CORRECT"} ) {
+  	$genprefix = "(--|-)";
+  	$autoabbrev = 0;		# no automatic abbrev of options
+  	$bundling = 0;			# no bundling of single letter switches
+  	$getopt_compat = 0;		# disallow '+' to start options
+  	$order = $REQUIRE_ORDER;
+      }
+      else {
+  	$genprefix = "(--|-|\\+)";
+  	$autoabbrev = 1;		# automatic abbrev of options
+  	$bundling = 0;			# bundling off by default
+  	$getopt_compat = 1;		# allow '+' to start options
+  	$order = $PERMUTE;
+      }
+      # Other configurable settings.
+      $debug = 0;			# for debugging
+      $error = 0;			# error tally
+      $ignorecase = 1;		# ignore case when matching options
+      $passthrough = 0;		# leave unrecognized options alone
+      $gnu_compat = 0;		# require --opt=val if value is optional
+      $longprefix = "(--)";       # what does a long prefix look like
+      $bundling_values = 0;	# no bundling of values
+  }
+  
+  # Override import.
+  sub import {
+      my $pkg = shift;		# package
+      my @syms = ();		# symbols to import
+      my @config = ();		# configuration
+      my $dest = \@syms;		# symbols first
+      for ( @_ ) {
+  	if ( $_ eq ':config' ) {
+  	    $dest = \@config;	# config next
+  	    next;
+  	}
+  	push(@$dest, $_);	# push
+      }
+      # Hide one level and call super.
+      local $Exporter::ExportLevel = 1;
+      push(@syms, qw(&GetOptions)) if @syms; # always export GetOptions
+      $requested_version = 0;
+      $pkg->SUPER::import(@syms);
+      # And configure.
+      Configure(@config) if @config;
+  }
+  
+  ################ Initialization ################
+  
+  # Values for $order. See GNU getopt.c for details.
+  ($REQUIRE_ORDER, $PERMUTE, $RETURN_IN_ORDER) = (0..2);
+  # Version major/minor numbers.
+  ($major_version, $minor_version) = $VERSION =~ /^(\d+)\.(\d+)/;
+  
+  ConfigDefaults();
+  
+  ################ OO Interface ################
+  
+  package Getopt::Long::Parser;
+  
+  # Store a copy of the default configuration. Since ConfigDefaults has
+  # just been called, what we get from Configure is the default.
+  my $default_config = do {
+      Getopt::Long::Configure ()
+  };
+  
+  sub new {
+      my $that = shift;
+      my $class = ref($that) || $that;
+      my %atts = @_;
+  
+      # Register the callers package.
+      my $self = { caller_pkg => (caller)[0] };
+  
+      bless ($self, $class);
+  
+      # Process config attributes.
+      if ( defined $atts{config} ) {
+  	my $save = Getopt::Long::Configure ($default_config, @{$atts{config}});
+  	$self->{settings} = Getopt::Long::Configure ($save);
+  	delete ($atts{config});
+      }
+      # Else use default config.
+      else {
+  	$self->{settings} = $default_config;
+      }
+  
+      if ( %atts ) {		# Oops
+  	die(__PACKAGE__.": unhandled attributes: ".
+  	    join(" ", sort(keys(%atts)))."\n");
+      }
+  
+      $self;
+  }
+  
+  sub configure {
+      my ($self) = shift;
+  
+      # Restore settings, merge new settings in.
+      my $save = Getopt::Long::Configure ($self->{settings}, @_);
+  
+      # Restore orig config and save the new config.
+      $self->{settings} = Getopt::Long::Configure ($save);
+  }
+  
+  sub getoptions {
+      my ($self) = shift;
+  
+      return $self->getoptionsfromarray(\@ARGV, @_);
+  }
+  
+  sub getoptionsfromarray {
+      my ($self) = shift;
+  
+      # Restore config settings.
+      my $save = Getopt::Long::Configure ($self->{settings});
+  
+      # Call main routine.
+      my $ret = 0;
+      $Getopt::Long::caller = $self->{caller_pkg};
+  
+      eval {
+  	# Locally set exception handler to default, otherwise it will
+  	# be called implicitly here, and again explicitly when we try
+  	# to deliver the messages.
+  	local ($SIG{__DIE__}) = 'DEFAULT';
+  	$ret = Getopt::Long::GetOptionsFromArray (@_);
+      };
+  
+      # Restore saved settings.
+      Getopt::Long::Configure ($save);
+  
+      # Handle errors and return value.
+      die ($@) if $@;
+      return $ret;
+  }
+  
+  package Getopt::Long;
+  
+  ################ Back to Normal ################
+  
+  # Indices in option control info.
+  # Note that ParseOptions uses the fields directly. Search for 'hard-wired'.
+  use constant CTL_TYPE    => 0;
+  #use constant   CTL_TYPE_FLAG   => '';
+  #use constant   CTL_TYPE_NEG    => '!';
+  #use constant   CTL_TYPE_INCR   => '+';
+  #use constant   CTL_TYPE_INT    => 'i';
+  #use constant   CTL_TYPE_INTINC => 'I';
+  #use constant   CTL_TYPE_XINT   => 'o';
+  #use constant   CTL_TYPE_FLOAT  => 'f';
+  #use constant   CTL_TYPE_STRING => 's';
+  
+  use constant CTL_CNAME   => 1;
+  
+  use constant CTL_DEFAULT => 2;
+  
+  use constant CTL_DEST    => 3;
+   use constant   CTL_DEST_SCALAR => 0;
+   use constant   CTL_DEST_ARRAY  => 1;
+   use constant   CTL_DEST_HASH   => 2;
+   use constant   CTL_DEST_CODE   => 3;
+  
+  use constant CTL_AMIN    => 4;
+  use constant CTL_AMAX    => 5;
+  
+  # FFU.
+  #use constant CTL_RANGE   => ;
+  #use constant CTL_REPEAT  => ;
+  
+  # Rather liberal patterns to match numbers.
+  use constant PAT_INT   => "[-+]?_*[0-9][0-9_]*";
+  use constant PAT_XINT  =>
+    "(?:".
+  	  "[-+]?_*[1-9][0-9_]*".
+    "|".
+  	  "0x_*[0-9a-f][0-9a-f_]*".
+    "|".
+  	  "0b_*[01][01_]*".
+    "|".
+  	  "0[0-7_]*".
+    ")";
+  use constant PAT_FLOAT =>
+    "[-+]?".			# optional sign
+    "(?=[0-9.])".			# must start with digit or dec.point
+    "[0-9_]*".			# digits before the dec.point
+    "(\.[0-9_]+)?".		# optional fraction
+    "([eE][-+]?[0-9_]+)?";	# optional exponent
+  
+  sub GetOptions(@) {
+      # Shift in default array.
+      unshift(@_, \@ARGV);
+      # Try to keep caller() and Carp consistent.
+      goto &GetOptionsFromArray;
+  }
+  
+  sub GetOptionsFromString(@) {
+      my ($string) = shift;
+      require Text::ParseWords;
+      my $args = [ Text::ParseWords::shellwords($string) ];
+      $caller ||= (caller)[0];	# current context
+      my $ret = GetOptionsFromArray($args, @_);
+      return ( $ret, $args ) if wantarray;
+      if ( @$args ) {
+  	$ret = 0;
+  	warn("GetOptionsFromString: Excess data \"@$args\" in string \"$string\"\n");
+      }
+      $ret;
+  }
+  
+  sub GetOptionsFromArray(@) {
+  
+      my ($argv, @optionlist) = @_;	# local copy of the option descriptions
+      my $argend = '--';		# option list terminator
+      my %opctl = ();		# table of option specs
+      my $pkg = $caller || (caller)[0];	# current context
+  				# Needed if linkage is omitted.
+      my @ret = ();		# accum for non-options
+      my %linkage;		# linkage
+      my $userlinkage;		# user supplied HASH
+      my $opt;			# current option
+      my $prefix = $genprefix;	# current prefix
+  
+      $error = '';
+  
+      if ( $debug ) {
+  	# Avoid some warnings if debugging.
+  	local ($^W) = 0;
+  	print STDERR
+  	  ("Getopt::Long $Getopt::Long::VERSION ",
+  	   "called from package \"$pkg\".",
+  	   "\n  ",
+  	   "argv: ",
+  	   defined($argv)
+  	   ? UNIVERSAL::isa( $argv, 'ARRAY' ) ? "(@$argv)" : $argv
+  	   : "<undef>",
+  	   "\n  ",
+  	   "autoabbrev=$autoabbrev,".
+  	   "bundling=$bundling,",
+  	   "bundling_values=$bundling_values,",
+  	   "getopt_compat=$getopt_compat,",
+  	   "gnu_compat=$gnu_compat,",
+  	   "order=$order,",
+  	   "\n  ",
+  	   "ignorecase=$ignorecase,",
+  	   "requested_version=$requested_version,",
+  	   "passthrough=$passthrough,",
+  	   "genprefix=\"$genprefix\",",
+  	   "longprefix=\"$longprefix\".",
+  	   "\n");
+      }
+  
+      # Check for ref HASH as first argument.
+      # First argument may be an object. It's OK to use this as long
+      # as it is really a hash underneath.
+      $userlinkage = undef;
+      if ( @optionlist && ref($optionlist[0]) and
+  	 UNIVERSAL::isa($optionlist[0],'HASH') ) {
+  	$userlinkage = shift (@optionlist);
+  	print STDERR ("=> user linkage: $userlinkage\n") if $debug;
+      }
+  
+      # See if the first element of the optionlist contains option
+      # starter characters.
+      # Be careful not to interpret '<>' as option starters.
+      if ( @optionlist && $optionlist[0] =~ /^\W+$/
+  	 && !($optionlist[0] eq '<>'
+  	      && @optionlist > 0
+  	      && ref($optionlist[1])) ) {
+  	$prefix = shift (@optionlist);
+  	# Turn into regexp. Needs to be parenthesized!
+  	$prefix =~ s/(\W)/\\$1/g;
+  	$prefix = "([" . $prefix . "])";
+  	print STDERR ("=> prefix=\"$prefix\"\n") if $debug;
+      }
+  
+      # Verify correctness of optionlist.
+      %opctl = ();
+      while ( @optionlist ) {
+  	my $opt = shift (@optionlist);
+  
+  	unless ( defined($opt) ) {
+  	    $error .= "Undefined argument in option spec\n";
+  	    next;
+  	}
+  
+  	# Strip leading prefix so people can specify "--foo=i" if they like.
+  	$opt = $+ if $opt =~ /^$prefix+(.*)$/s;
+  
+  	if ( $opt eq '<>' ) {
+  	    if ( (defined $userlinkage)
+  		&& !(@optionlist > 0 && ref($optionlist[0]))
+  		&& (exists $userlinkage->{$opt})
+  		&& ref($userlinkage->{$opt}) ) {
+  		unshift (@optionlist, $userlinkage->{$opt});
+  	    }
+  	    unless ( @optionlist > 0
+  		    && ref($optionlist[0]) && ref($optionlist[0]) eq 'CODE' ) {
+  		$error .= "Option spec <> requires a reference to a subroutine\n";
+  		# Kill the linkage (to avoid another error).
+  		shift (@optionlist)
+  		  if @optionlist && ref($optionlist[0]);
+  		next;
+  	    }
+  	    $linkage{'<>'} = shift (@optionlist);
+  	    next;
+  	}
+  
+  	# Parse option spec.
+  	my ($name, $orig) = ParseOptionSpec ($opt, \%opctl);
+  	unless ( defined $name ) {
+  	    # Failed. $orig contains the error message. Sorry for the abuse.
+  	    $error .= $orig;
+  	    # Kill the linkage (to avoid another error).
+  	    shift (@optionlist)
+  	      if @optionlist && ref($optionlist[0]);
+  	    next;
+  	}
+  
+  	# If no linkage is supplied in the @optionlist, copy it from
+  	# the userlinkage if available.
+  	if ( defined $userlinkage ) {
+  	    unless ( @optionlist > 0 && ref($optionlist[0]) ) {
+  		if ( exists $userlinkage->{$orig} &&
+  		     ref($userlinkage->{$orig}) ) {
+  		    print STDERR ("=> found userlinkage for \"$orig\": ",
+  				  "$userlinkage->{$orig}\n")
+  			if $debug;
+  		    unshift (@optionlist, $userlinkage->{$orig});
+  		}
+  		else {
+  		    # Do nothing. Being undefined will be handled later.
+  		    next;
+  		}
+  	    }
+  	}
+  
+  	# Copy the linkage. If omitted, link to global variable.
+  	if ( @optionlist > 0 && ref($optionlist[0]) ) {
+  	    print STDERR ("=> link \"$orig\" to $optionlist[0]\n")
+  		if $debug;
+  	    my $rl = ref($linkage{$orig} = shift (@optionlist));
+  
+  	    if ( $rl eq "ARRAY" ) {
+  		$opctl{$name}[CTL_DEST] = CTL_DEST_ARRAY;
+  	    }
+  	    elsif ( $rl eq "HASH" ) {
+  		$opctl{$name}[CTL_DEST] = CTL_DEST_HASH;
+  	    }
+  	    elsif ( $rl eq "SCALAR" || $rl eq "REF" ) {
+  #		if ( $opctl{$name}[CTL_DEST] == CTL_DEST_ARRAY ) {
+  #		    my $t = $linkage{$orig};
+  #		    $$t = $linkage{$orig} = [];
+  #		}
+  #		elsif ( $opctl{$name}[CTL_DEST] == CTL_DEST_HASH ) {
+  #		}
+  #		else {
+  		    # Ok.
+  #		}
+  	    }
+  	    elsif ( $rl eq "CODE" ) {
+  		# Ok.
+  	    }
+  	    else {
+  		$error .= "Invalid option linkage for \"$opt\"\n";
+  	    }
+  	}
+  	else {
+  	    # Link to global $opt_XXX variable.
+  	    # Make sure a valid perl identifier results.
+  	    my $ov = $orig;
+  	    $ov =~ s/\W/_/g;
+  	    if ( $opctl{$name}[CTL_DEST] == CTL_DEST_ARRAY ) {
+  		print STDERR ("=> link \"$orig\" to \@$pkg","::opt_$ov\n")
+  		    if $debug;
+  		eval ("\$linkage{\$orig} = \\\@".$pkg."::opt_$ov;");
+  	    }
+  	    elsif ( $opctl{$name}[CTL_DEST] == CTL_DEST_HASH ) {
+  		print STDERR ("=> link \"$orig\" to \%$pkg","::opt_$ov\n")
+  		    if $debug;
+  		eval ("\$linkage{\$orig} = \\\%".$pkg."::opt_$ov;");
+  	    }
+  	    else {
+  		print STDERR ("=> link \"$orig\" to \$$pkg","::opt_$ov\n")
+  		    if $debug;
+  		eval ("\$linkage{\$orig} = \\\$".$pkg."::opt_$ov;");
+  	    }
+  	}
+  
+  	if ( $opctl{$name}[CTL_TYPE] eq 'I'
+  	     && ( $opctl{$name}[CTL_DEST] == CTL_DEST_ARRAY
+  		  || $opctl{$name}[CTL_DEST] == CTL_DEST_HASH )
+  	   ) {
+  	    $error .= "Invalid option linkage for \"$opt\"\n";
+  	}
+  
+      }
+  
+      $error .= "GetOptionsFromArray: 1st parameter is not an array reference\n"
+        unless $argv && UNIVERSAL::isa( $argv, 'ARRAY' );
+  
+      # Bail out if errors found.
+      die ($error) if $error;
+      $error = 0;
+  
+      # Supply --version and --help support, if needed and allowed.
+      if ( defined($auto_version) ? $auto_version : ($requested_version >= 2.3203) ) {
+  	if ( !defined($opctl{version}) ) {
+  	    $opctl{version} = ['','version',0,CTL_DEST_CODE,undef];
+  	    $linkage{version} = \&VersionMessage;
+  	}
+  	$auto_version = 1;
+      }
+      if ( defined($auto_help) ? $auto_help : ($requested_version >= 2.3203) ) {
+  	if ( !defined($opctl{help}) && !defined($opctl{'?'}) ) {
+  	    $opctl{help} = $opctl{'?'} = ['','help',0,CTL_DEST_CODE,undef];
+  	    $linkage{help} = \&HelpMessage;
+  	}
+  	$auto_help = 1;
+      }
+  
+      # Show the options tables if debugging.
+      if ( $debug ) {
+  	my ($arrow, $k, $v);
+  	$arrow = "=> ";
+  	while ( ($k,$v) = each(%opctl) ) {
+  	    print STDERR ($arrow, "\$opctl{$k} = $v ", OptCtl($v), "\n");
+  	    $arrow = "   ";
+  	}
+      }
+  
+      # Process argument list
+      my $goon = 1;
+      while ( $goon && @$argv > 0 ) {
+  
+  	# Get next argument.
+  	$opt = shift (@$argv);
+  	print STDERR ("=> arg \"", $opt, "\"\n") if $debug;
+  
+  	# Double dash is option list terminator.
+  	if ( defined($opt) && $opt eq $argend ) {
+  	  push (@ret, $argend) if $passthrough;
+  	  last;
+  	}
+  
+  	# Look it up.
+  	my $tryopt = $opt;
+  	my $found;		# success status
+  	my $key;		# key (if hash type)
+  	my $arg;		# option argument
+  	my $ctl;		# the opctl entry
+  
+  	($found, $opt, $ctl, $arg, $key) =
+  	  FindOption ($argv, $prefix, $argend, $opt, \%opctl);
+  
+  	if ( $found ) {
+  
+  	    # FindOption undefines $opt in case of errors.
+  	    next unless defined $opt;
+  
+  	    my $argcnt = 0;
+  	    while ( defined $arg ) {
+  
+  		# Get the canonical name.
+  		print STDERR ("=> cname for \"$opt\" is ") if $debug;
+  		$opt = $ctl->[CTL_CNAME];
+  		print STDERR ("\"$ctl->[CTL_CNAME]\"\n") if $debug;
+  
+  		if ( defined $linkage{$opt} ) {
+  		    print STDERR ("=> ref(\$L{$opt}) -> ",
+  				  ref($linkage{$opt}), "\n") if $debug;
+  
+  		    if ( ref($linkage{$opt}) eq 'SCALAR'
+  			 || ref($linkage{$opt}) eq 'REF' ) {
+  			if ( $ctl->[CTL_TYPE] eq '+' ) {
+  			    print STDERR ("=> \$\$L{$opt} += \"$arg\"\n")
+  			      if $debug;
+  			    if ( defined ${$linkage{$opt}} ) {
+  			        ${$linkage{$opt}} += $arg;
+  			    }
+  		            else {
+  			        ${$linkage{$opt}} = $arg;
+  			    }
+  			}
+  			elsif ( $ctl->[CTL_DEST] == CTL_DEST_ARRAY ) {
+  			    print STDERR ("=> ref(\$L{$opt}) auto-vivified",
+  					  " to ARRAY\n")
+  			      if $debug;
+  			    my $t = $linkage{$opt};
+  			    $$t = $linkage{$opt} = [];
+  			    print STDERR ("=> push(\@{\$L{$opt}, \"$arg\")\n")
+  			      if $debug;
+  			    push (@{$linkage{$opt}}, $arg);
+  			}
+  			elsif ( $ctl->[CTL_DEST] == CTL_DEST_HASH ) {
+  			    print STDERR ("=> ref(\$L{$opt}) auto-vivified",
+  					  " to HASH\n")
+  			      if $debug;
+  			    my $t = $linkage{$opt};
+  			    $$t = $linkage{$opt} = {};
+  			    print STDERR ("=> \$\$L{$opt}->{$key} = \"$arg\"\n")
+  			      if $debug;
+  			    $linkage{$opt}->{$key} = $arg;
+  			}
+  			else {
+  			    print STDERR ("=> \$\$L{$opt} = \"$arg\"\n")
+  			      if $debug;
+  			    ${$linkage{$opt}} = $arg;
+  		        }
+  		    }
+  		    elsif ( ref($linkage{$opt}) eq 'ARRAY' ) {
+  			print STDERR ("=> push(\@{\$L{$opt}, \"$arg\")\n")
+  			    if $debug;
+  			push (@{$linkage{$opt}}, $arg);
+  		    }
+  		    elsif ( ref($linkage{$opt}) eq 'HASH' ) {
+  			print STDERR ("=> \$\$L{$opt}->{$key} = \"$arg\"\n")
+  			    if $debug;
+  			$linkage{$opt}->{$key} = $arg;
+  		    }
+  		    elsif ( ref($linkage{$opt}) eq 'CODE' ) {
+  			print STDERR ("=> &L{$opt}(\"$opt\"",
+  				      $ctl->[CTL_DEST] == CTL_DEST_HASH ? ", \"$key\"" : "",
+  				      ", \"$arg\")\n")
+  			    if $debug;
+  			my $eval_error = do {
+  			    local $@;
+  			    local $SIG{__DIE__}  = 'DEFAULT';
+  			    eval {
+  				&{$linkage{$opt}}
+  				  (Getopt::Long::CallBack->new
+  				   (name    => $opt,
+  				    ctl     => $ctl,
+  				    opctl   => \%opctl,
+  				    linkage => \%linkage,
+  				    prefix  => $prefix,
+  				   ),
+  				   $ctl->[CTL_DEST] == CTL_DEST_HASH ? ($key) : (),
+  				   $arg);
+  			    };
+  			    $@;
+  			};
+  			print STDERR ("=> die($eval_error)\n")
+  			  if $debug && $eval_error ne '';
+  			if ( $eval_error =~ /^!/ ) {
+  			    if ( $eval_error =~ /^!FINISH\b/ ) {
+  				$goon = 0;
+  			    }
+  			}
+  			elsif ( $eval_error ne '' ) {
+  			    warn ($eval_error);
+  			    $error++;
+  			}
+  		    }
+  		    else {
+  			print STDERR ("Invalid REF type \"", ref($linkage{$opt}),
+  				      "\" in linkage\n");
+  			die("Getopt::Long -- internal error!\n");
+  		    }
+  		}
+  		# No entry in linkage means entry in userlinkage.
+  		elsif ( $ctl->[CTL_DEST] == CTL_DEST_ARRAY ) {
+  		    if ( defined $userlinkage->{$opt} ) {
+  			print STDERR ("=> push(\@{\$L{$opt}}, \"$arg\")\n")
+  			    if $debug;
+  			push (@{$userlinkage->{$opt}}, $arg);
+  		    }
+  		    else {
+  			print STDERR ("=>\$L{$opt} = [\"$arg\"]\n")
+  			    if $debug;
+  			$userlinkage->{$opt} = [$arg];
+  		    }
+  		}
+  		elsif ( $ctl->[CTL_DEST] == CTL_DEST_HASH ) {
+  		    if ( defined $userlinkage->{$opt} ) {
+  			print STDERR ("=> \$L{$opt}->{$key} = \"$arg\"\n")
+  			    if $debug;
+  			$userlinkage->{$opt}->{$key} = $arg;
+  		    }
+  		    else {
+  			print STDERR ("=>\$L{$opt} = {$key => \"$arg\"}\n")
+  			    if $debug;
+  			$userlinkage->{$opt} = {$key => $arg};
+  		    }
+  		}
+  		else {
+  		    if ( $ctl->[CTL_TYPE] eq '+' ) {
+  			print STDERR ("=> \$L{$opt} += \"$arg\"\n")
+  			  if $debug;
+  			if ( defined $userlinkage->{$opt} ) {
+  			    $userlinkage->{$opt} += $arg;
+  			}
+  			else {
+  			    $userlinkage->{$opt} = $arg;
+  			}
+  		    }
+  		    else {
+  			print STDERR ("=>\$L{$opt} = \"$arg\"\n") if $debug;
+  			$userlinkage->{$opt} = $arg;
+  		    }
+  		}
+  
+  		$argcnt++;
+  		last if $argcnt >= $ctl->[CTL_AMAX] && $ctl->[CTL_AMAX] != -1;
+  		undef($arg);
+  
+  		# Need more args?
+  		if ( $argcnt < $ctl->[CTL_AMIN] ) {
+  		    if ( @$argv ) {
+  			if ( ValidValue($ctl, $argv->[0], 1, $argend, $prefix) ) {
+  			    $arg = shift(@$argv);
+  			    if ( $ctl->[CTL_TYPE] =~ /^[iIo]$/ ) {
+  				$arg =~ tr/_//d;
+  				$arg = $ctl->[CTL_TYPE] eq 'o' && $arg =~ /^0/
+  				  ? oct($arg)
+  				  : 0+$arg
+  			    }
+  			    ($key,$arg) = $arg =~ /^([^=]+)=(.*)/
+  			      if $ctl->[CTL_DEST] == CTL_DEST_HASH;
+  			    next;
+  			}
+  			warn("Value \"$$argv[0]\" invalid for option $opt\n");
+  			$error++;
+  		    }
+  		    else {
+  			warn("Insufficient arguments for option $opt\n");
+  			$error++;
+  		    }
+  		}
+  
+  		# Any more args?
+  		if ( @$argv && ValidValue($ctl, $argv->[0], 0, $argend, $prefix) ) {
+  		    $arg = shift(@$argv);
+  		    if ( $ctl->[CTL_TYPE] =~ /^[iIo]$/ ) {
+  			$arg =~ tr/_//d;
+  			$arg = $ctl->[CTL_TYPE] eq 'o' && $arg =~ /^0/
+  			  ? oct($arg)
+  			  : 0+$arg
+  		    }
+  		    ($key,$arg) = $arg =~ /^([^=]+)=(.*)/
+  		      if $ctl->[CTL_DEST] == CTL_DEST_HASH;
+  		    next;
+  		}
+  	    }
+  	}
+  
+  	# Not an option. Save it if we $PERMUTE and don't have a <>.
+  	elsif ( $order == $PERMUTE ) {
+  	    # Try non-options call-back.
+  	    my $cb;
+  	    if ( defined ($cb = $linkage{'<>'}) ) {
+  		print STDERR ("=> &L{$tryopt}(\"$tryopt\")\n")
+  		  if $debug;
+  		my $eval_error = do {
+  		    local $@;
+  		    local $SIG{__DIE__}  = 'DEFAULT';
+  		    eval {
+  			# The arg to <> cannot be the CallBack object
+  			# since it may be passed to other modules that
+  			# get confused (e.g., Archive::Tar). Well,
+  			# it's not relevant for this callback anyway.
+  			&$cb($tryopt);
+  		    };
+  		    $@;
+  		};
+  		print STDERR ("=> die($eval_error)\n")
+  		  if $debug && $eval_error ne '';
+  		if ( $eval_error =~ /^!/ ) {
+  		    if ( $eval_error =~ /^!FINISH\b/ ) {
+  			$goon = 0;
+  		    }
+  		}
+  		elsif ( $eval_error ne '' ) {
+  		    warn ($eval_error);
+  		    $error++;
+  		}
+  	    }
+  	    else {
+  		print STDERR ("=> saving \"$tryopt\" ",
+  			      "(not an option, may permute)\n") if $debug;
+  		push (@ret, $tryopt);
+  	    }
+  	    next;
+  	}
+  
+  	# ...otherwise, terminate.
+  	else {
+  	    # Push this one back and exit.
+  	    unshift (@$argv, $tryopt);
+  	    return ($error == 0);
+  	}
+  
+      }
+  
+      # Finish.
+      if ( @ret && $order == $PERMUTE ) {
+  	#  Push back accumulated arguments
+  	print STDERR ("=> restoring \"", join('" "', @ret), "\"\n")
+  	    if $debug;
+  	unshift (@$argv, @ret);
+      }
+  
+      return ($error == 0);
+  }
+  
+  # A readable representation of what's in an optbl.
+  sub OptCtl ($) {
+      my ($v) = @_;
+      my @v = map { defined($_) ? ($_) : ("<undef>") } @$v;
+      "[".
+        join(",",
+  	   "\"$v[CTL_TYPE]\"",
+  	   "\"$v[CTL_CNAME]\"",
+  	   "\"$v[CTL_DEFAULT]\"",
+  	   ("\$","\@","\%","\&")[$v[CTL_DEST] || 0],
+  	   $v[CTL_AMIN] || '',
+  	   $v[CTL_AMAX] || '',
+  #	   $v[CTL_RANGE] || '',
+  #	   $v[CTL_REPEAT] || '',
+  	  ). "]";
+  }
+  
+  # Parse an option specification and fill the tables.
+  sub ParseOptionSpec ($$) {
+      my ($opt, $opctl) = @_;
+  
+      # Match option spec.
+      if ( $opt !~ m;^
+  		   (
+  		     # Option name
+  		     (?: \w+[-\w]* )
+  		     # Alias names, or "?"
+  		     (?: \| (?: \? | \w[-\w]* ) )*
+  		     # Aliases
+  		     (?: \| (?: [^-|!+=:][^|!+=:]* )? )*
+  		   )?
+  		   (
+  		     # Either modifiers ...
+  		     [!+]
+  		     |
+  		     # ... or a value/dest/repeat specification
+  		     [=:] [ionfs] [@%]? (?: \{\d*,?\d*\} )?
+  		     |
+  		     # ... or an optional-with-default spec
+  		     : (?: -?\d+ | \+ ) [@%]?
+  		   )?
+  		   $;x ) {
+  	return (undef, "Error in option spec: \"$opt\"\n");
+      }
+  
+      my ($names, $spec) = ($1, $2);
+      $spec = '' unless defined $spec;
+  
+      # $orig keeps track of the primary name the user specified.
+      # This name will be used for the internal or external linkage.
+      # In other words, if the user specifies "FoO|BaR", it will
+      # match any case combinations of 'foo' and 'bar', but if a global
+      # variable needs to be set, it will be $opt_FoO in the exact case
+      # as specified.
+      my $orig;
+  
+      my @names;
+      if ( defined $names ) {
+  	@names =  split (/\|/, $names);
+  	$orig = $names[0];
+      }
+      else {
+  	@names = ('');
+  	$orig = '';
+      }
+  
+      # Construct the opctl entries.
+      my $entry;
+      if ( $spec eq '' || $spec eq '+' || $spec eq '!' ) {
+  	# Fields are hard-wired here.
+  	$entry = [$spec,$orig,undef,CTL_DEST_SCALAR,0,0];
+      }
+      elsif ( $spec =~ /^:(-?\d+|\+)([@%])?$/ ) {
+  	my $def = $1;
+  	my $dest = $2;
+  	my $type = $def eq '+' ? 'I' : 'i';
+  	$dest ||= '$';
+  	$dest = $dest eq '@' ? CTL_DEST_ARRAY
+  	  : $dest eq '%' ? CTL_DEST_HASH : CTL_DEST_SCALAR;
+  	# Fields are hard-wired here.
+  	$entry = [$type,$orig,$def eq '+' ? undef : $def,
+  		  $dest,0,1];
+      }
+      else {
+  	my ($mand, $type, $dest) =
+  	  $spec =~ /^([=:])([ionfs])([@%])?(\{(\d+)?(,)?(\d+)?\})?$/;
+  	return (undef, "Cannot repeat while bundling: \"$opt\"\n")
+  	  if $bundling && defined($4);
+  	my ($mi, $cm, $ma) = ($5, $6, $7);
+  	return (undef, "{0} is useless in option spec: \"$opt\"\n")
+  	  if defined($mi) && !$mi && !defined($ma) && !defined($cm);
+  
+  	$type = 'i' if $type eq 'n';
+  	$dest ||= '$';
+  	$dest = $dest eq '@' ? CTL_DEST_ARRAY
+  	  : $dest eq '%' ? CTL_DEST_HASH : CTL_DEST_SCALAR;
+  	# Default minargs to 1/0 depending on mand status.
+  	$mi = $mand eq '=' ? 1 : 0 unless defined $mi;
+  	# Adjust mand status according to minargs.
+  	$mand = $mi ? '=' : ':';
+  	# Adjust maxargs.
+  	$ma = $mi ? $mi : 1 unless defined $ma || defined $cm;
+  	return (undef, "Max must be greater than zero in option spec: \"$opt\"\n")
+  	  if defined($ma) && !$ma;
+  	return (undef, "Max less than min in option spec: \"$opt\"\n")
+  	  if defined($ma) && $ma < $mi;
+  
+  	# Fields are hard-wired here.
+  	$entry = [$type,$orig,undef,$dest,$mi,$ma||-1];
+      }
+  
+      # Process all names. First is canonical, the rest are aliases.
+      my $dups = '';
+      foreach ( @names ) {
+  
+  	$_ = lc ($_)
+  	  if $ignorecase > (($bundling && length($_) == 1) ? 1 : 0);
+  
+  	if ( exists $opctl->{$_} ) {
+  	    $dups .= "Duplicate specification \"$opt\" for option \"$_\"\n";
+  	}
+  
+  	if ( $spec eq '!' ) {
+  	    $opctl->{"no$_"} = $entry;
+  	    $opctl->{"no-$_"} = $entry;
+  	    $opctl->{$_} = [@$entry];
+  	    $opctl->{$_}->[CTL_TYPE] = '';
+  	}
+  	else {
+  	    $opctl->{$_} = $entry;
+  	}
+      }
+  
+      if ( $dups && $^W ) {
+  	foreach ( split(/\n+/, $dups) ) {
+  	    warn($_."\n");
+  	}
+      }
+      ($names[0], $orig);
+  }
+  
+  # Option lookup.
+  sub FindOption ($$$$$) {
+  
+      # returns (1, $opt, $ctl, $arg, $key) if okay,
+      # returns (1, undef) if option in error,
+      # returns (0) otherwise.
+  
+      my ($argv, $prefix, $argend, $opt, $opctl) = @_;
+  
+      print STDERR ("=> find \"$opt\"\n") if $debug;
+  
+      return (0) unless defined($opt);
+      return (0) unless $opt =~ /^($prefix)(.*)$/s;
+      return (0) if $opt eq "-" && !defined $opctl->{''};
+  
+      $opt = substr( $opt, length($1) ); # retain taintedness
+      my $starter = $1;
+  
+      print STDERR ("=> split \"$starter\"+\"$opt\"\n") if $debug;
+  
+      my $optarg;			# value supplied with --opt=value
+      my $rest;			# remainder from unbundling
+  
+      # If it is a long option, it may include the value.
+      # With getopt_compat, only if not bundling.
+      if ( ($starter=~/^$longprefix$/
+  	  || ($getopt_compat && ($bundling == 0 || $bundling == 2)))
+  	 && (my $oppos = index($opt, '=', 1)) > 0) {
+  	my $optorg = $opt;
+  	$opt = substr($optorg, 0, $oppos);
+  	$optarg = substr($optorg, $oppos + 1); # retain tainedness
+  	print STDERR ("=> option \"", $opt,
+  		      "\", optarg = \"$optarg\"\n") if $debug;
+      }
+  
+      #### Look it up ###
+  
+      my $tryopt = $opt;		# option to try
+  
+      if ( ( $bundling || $bundling_values ) && $starter eq '-' ) {
+  
+  	# To try overrides, obey case ignore.
+  	$tryopt = $ignorecase ? lc($opt) : $opt;
+  
+  	# If bundling == 2, long options can override bundles.
+  	if ( $bundling == 2 && length($tryopt) > 1
+  	     && defined ($opctl->{$tryopt}) ) {
+  	    print STDERR ("=> $starter$tryopt overrides unbundling\n")
+  	      if $debug;
+  	}
+  
+  	# If bundling_values, option may be followed by the value.
+  	elsif ( $bundling_values ) {
+  	    $tryopt = $opt;
+  	    # Unbundle single letter option.
+  	    $rest = length ($tryopt) > 0 ? substr ($tryopt, 1) : '';
+  	    $tryopt = substr ($tryopt, 0, 1);
+  	    $tryopt = lc ($tryopt) if $ignorecase > 1;
+  	    print STDERR ("=> $starter$tryopt unbundled from ",
+  			  "$starter$tryopt$rest\n") if $debug;
+  	    # Whatever remains may not be considered an option.
+  	    $optarg = $rest eq '' ? undef : $rest;
+  	    $rest = undef;
+  	}
+  
+  	# Split off a single letter and leave the rest for
+  	# further processing.
+  	else {
+  	    $tryopt = $opt;
+  	    # Unbundle single letter option.
+  	    $rest = length ($tryopt) > 0 ? substr ($tryopt, 1) : '';
+  	    $tryopt = substr ($tryopt, 0, 1);
+  	    $tryopt = lc ($tryopt) if $ignorecase > 1;
+  	    print STDERR ("=> $starter$tryopt unbundled from ",
+  			  "$starter$tryopt$rest\n") if $debug;
+  	    $rest = undef unless $rest ne '';
+  	}
+      }
+  
+      # Try auto-abbreviation.
+      elsif ( $autoabbrev && $opt ne "" ) {
+  	# Sort the possible long option names.
+  	my @names = sort(keys (%$opctl));
+  	# Downcase if allowed.
+  	$opt = lc ($opt) if $ignorecase;
+  	$tryopt = $opt;
+  	# Turn option name into pattern.
+  	my $pat = quotemeta ($opt);
+  	# Look up in option names.
+  	my @hits = grep (/^$pat/, @names);
+  	print STDERR ("=> ", scalar(@hits), " hits (@hits) with \"$pat\" ",
+  		      "out of ", scalar(@names), "\n") if $debug;
+  
+  	# Check for ambiguous results.
+  	unless ( (@hits <= 1) || (grep ($_ eq $opt, @hits) == 1) ) {
+  	    # See if all matches are for the same option.
+  	    my %hit;
+  	    foreach ( @hits ) {
+  		my $hit = $opctl->{$_}->[CTL_CNAME]
+  		  if defined $opctl->{$_}->[CTL_CNAME];
+  		$hit = "no" . $hit if $opctl->{$_}->[CTL_TYPE] eq '!';
+  		$hit{$hit} = 1;
+  	    }
+  	    # Remove auto-supplied options (version, help).
+  	    if ( keys(%hit) == 2 ) {
+  		if ( $auto_version && exists($hit{version}) ) {
+  		    delete $hit{version};
+  		}
+  		elsif ( $auto_help && exists($hit{help}) ) {
+  		    delete $hit{help};
+  		}
+  	    }
+  	    # Now see if it really is ambiguous.
+  	    unless ( keys(%hit) == 1 ) {
+  		return (0) if $passthrough;
+  		warn ("Option ", $opt, " is ambiguous (",
+  		      join(", ", @hits), ")\n");
+  		$error++;
+  		return (1, undef);
+  	    }
+  	    @hits = keys(%hit);
+  	}
+  
+  	# Complete the option name, if appropriate.
+  	if ( @hits == 1 && $hits[0] ne $opt ) {
+  	    $tryopt = $hits[0];
+  	    $tryopt = lc ($tryopt)
+  	      if $ignorecase > (($bundling && length($tryopt) == 1) ? 1 : 0);
+  	    print STDERR ("=> option \"$opt\" -> \"$tryopt\"\n")
+  		if $debug;
+  	}
+      }
+  
+      # Map to all lowercase if ignoring case.
+      elsif ( $ignorecase ) {
+  	$tryopt = lc ($opt);
+      }
+  
+      # Check validity by fetching the info.
+      my $ctl = $opctl->{$tryopt};
+      unless  ( defined $ctl ) {
+  	return (0) if $passthrough;
+  	# Pretend one char when bundling.
+  	if ( $bundling == 1 && length($starter) == 1 ) {
+  	    $opt = substr($opt,0,1);
+              unshift (@$argv, $starter.$rest) if defined $rest;
+  	}
+  	if ( $opt eq "" ) {
+  	    warn ("Missing option after ", $starter, "\n");
+  	}
+  	else {
+  	    warn ("Unknown option: ", $opt, "\n");
+  	}
+  	$error++;
+  	return (1, undef);
+      }
+      # Apparently valid.
+      $opt = $tryopt;
+      print STDERR ("=> found ", OptCtl($ctl),
+  		  " for \"", $opt, "\"\n") if $debug;
+  
+      #### Determine argument status ####
+  
+      # If it is an option w/o argument, we're almost finished with it.
+      my $type = $ctl->[CTL_TYPE];
+      my $arg;
+  
+      if ( $type eq '' || $type eq '!' || $type eq '+' ) {
+  	if ( defined $optarg ) {
+  	    return (0) if $passthrough;
+  	    warn ("Option ", $opt, " does not take an argument\n");
+  	    $error++;
+  	    undef $opt;
+  	    undef $optarg if $bundling_values;
+  	}
+  	elsif ( $type eq '' || $type eq '+' ) {
+  	    # Supply explicit value.
+  	    $arg = 1;
+  	}
+  	else {
+  	    $opt =~ s/^no-?//i;	# strip NO prefix
+  	    $arg = 0;		# supply explicit value
+  	}
+  	unshift (@$argv, $starter.$rest) if defined $rest;
+  	return (1, $opt, $ctl, $arg);
+      }
+  
+      # Get mandatory status and type info.
+      my $mand = $ctl->[CTL_AMIN];
+  
+      # Check if there is an option argument available.
+      if ( $gnu_compat ) {
+  	my $optargtype = 0; # none, 1 = empty, 2 = nonempty, 3 = aux
+  	if ( defined($optarg) ) {
+  	    $optargtype = (length($optarg) == 0) ? 1 : 2;
+  	}
+  	elsif ( defined $rest || @$argv > 0 ) {
+  	    # GNU getopt_long() does not accept the (optional)
+  	    # argument to be passed to the option without = sign.
+  	    # We do, since not doing so breaks existing scripts.
+  	    $optargtype = 3;
+  	}
+  	if(($optargtype == 0) && !$mand) {
+  	    my $val
+  	      = defined($ctl->[CTL_DEFAULT]) ? $ctl->[CTL_DEFAULT]
+  	      : $type eq 's'                 ? ''
+  	      :                                0;
+  	    return (1, $opt, $ctl, $val);
+  	}
+  	return (1, $opt, $ctl, $type eq 's' ? '' : 0)
+  	  if $optargtype == 1;  # --foo=  -> return nothing
+      }
+  
+      # Check if there is an option argument available.
+      if ( defined $optarg
+  	 ? ($optarg eq '')
+  	 : !(defined $rest || @$argv > 0) ) {
+  	# Complain if this option needs an argument.
+  #	if ( $mand && !($type eq 's' ? defined($optarg) : 0) ) {
+  	if ( $mand ) {
+  	    return (0) if $passthrough;
+  	    warn ("Option ", $opt, " requires an argument\n");
+  	    $error++;
+  	    return (1, undef);
+  	}
+  	if ( $type eq 'I' ) {
+  	    # Fake incremental type.
+  	    my @c = @$ctl;
+  	    $c[CTL_TYPE] = '+';
+  	    return (1, $opt, \@c, 1);
+  	}
+  	return (1, $opt, $ctl,
+  		defined($ctl->[CTL_DEFAULT]) ? $ctl->[CTL_DEFAULT] :
+  		$type eq 's' ? '' : 0);
+      }
+  
+      # Get (possibly optional) argument.
+      $arg = (defined $rest ? $rest
+  	    : (defined $optarg ? $optarg : shift (@$argv)));
+  
+      # Get key if this is a "name=value" pair for a hash option.
+      my $key;
+      if ($ctl->[CTL_DEST] == CTL_DEST_HASH && defined $arg) {
+  	($key, $arg) = ($arg =~ /^([^=]*)=(.*)$/s) ? ($1, $2)
+  	  : ($arg, defined($ctl->[CTL_DEFAULT]) ? $ctl->[CTL_DEFAULT] :
+  	     ($mand ? undef : ($type eq 's' ? "" : 1)));
+  	if (! defined $arg) {
+  	    warn ("Option $opt, key \"$key\", requires a value\n");
+  	    $error++;
+  	    # Push back.
+  	    unshift (@$argv, $starter.$rest) if defined $rest;
+  	    return (1, undef);
+  	}
+      }
+  
+      #### Check if the argument is valid for this option ####
+  
+      my $key_valid = $ctl->[CTL_DEST] == CTL_DEST_HASH ? "[^=]+=" : "";
+  
+      if ( $type eq 's' ) {	# string
+  	# A mandatory string takes anything.
+  	return (1, $opt, $ctl, $arg, $key) if $mand;
+  
+  	# Same for optional string as a hash value
+  	return (1, $opt, $ctl, $arg, $key)
+  	  if $ctl->[CTL_DEST] == CTL_DEST_HASH;
+  
+  	# An optional string takes almost anything.
+  	return (1, $opt, $ctl, $arg, $key)
+  	  if defined $optarg || defined $rest;
+  	return (1, $opt, $ctl, $arg, $key) if $arg eq "-"; # ??
+  
+  	# Check for option or option list terminator.
+  	if ($arg eq $argend ||
+  	    $arg =~ /^$prefix.+/) {
+  	    # Push back.
+  	    unshift (@$argv, $arg);
+  	    # Supply empty value.
+  	    $arg = '';
+  	}
+      }
+  
+      elsif ( $type eq 'i'	# numeric/integer
+              || $type eq 'I'	# numeric/integer w/ incr default
+  	    || $type eq 'o' ) { # dec/oct/hex/bin value
+  
+  	my $o_valid = $type eq 'o' ? PAT_XINT : PAT_INT;
+  
+  	if ( $bundling && defined $rest
+  	     && $rest =~ /^($key_valid)($o_valid)(.*)$/si ) {
+  	    ($key, $arg, $rest) = ($1, $2, $+);
+  	    chop($key) if $key;
+  	    $arg = ($type eq 'o' && $arg =~ /^0/) ? oct($arg) : 0+$arg;
+  	    unshift (@$argv, $starter.$rest) if defined $rest && $rest ne '';
+  	}
+  	elsif ( $arg =~ /^$o_valid$/si ) {
+  	    $arg =~ tr/_//d;
+  	    $arg = ($type eq 'o' && $arg =~ /^0/) ? oct($arg) : 0+$arg;
+  	}
+  	else {
+  	    if ( defined $optarg || $mand ) {
+  		if ( $passthrough ) {
+  		    unshift (@$argv, defined $rest ? $starter.$rest : $arg)
+  		      unless defined $optarg;
+  		    return (0);
+  		}
+  		warn ("Value \"", $arg, "\" invalid for option ",
+  		      $opt, " (",
+  		      $type eq 'o' ? "extended " : '',
+  		      "number expected)\n");
+  		$error++;
+  		# Push back.
+  		unshift (@$argv, $starter.$rest) if defined $rest;
+  		return (1, undef);
+  	    }
+  	    else {
+  		# Push back.
+  		unshift (@$argv, defined $rest ? $starter.$rest : $arg);
+  		if ( $type eq 'I' ) {
+  		    # Fake incremental type.
+  		    my @c = @$ctl;
+  		    $c[CTL_TYPE] = '+';
+  		    return (1, $opt, \@c, 1);
+  		}
+  		# Supply default value.
+  		$arg = defined($ctl->[CTL_DEFAULT]) ? $ctl->[CTL_DEFAULT] : 0;
+  	    }
+  	}
+      }
+  
+      elsif ( $type eq 'f' ) { # real number, int is also ok
+  	my $o_valid = PAT_FLOAT;
+  	if ( $bundling && defined $rest &&
+  	     $rest =~ /^($key_valid)($o_valid)(.*)$/s ) {
+  	    $arg =~ tr/_//d;
+  	    ($key, $arg, $rest) = ($1, $2, $+);
+  	    chop($key) if $key;
+  	    unshift (@$argv, $starter.$rest) if defined $rest && $rest ne '';
+  	}
+  	elsif ( $arg =~ /^$o_valid$/ ) {
+  	    $arg =~ tr/_//d;
+  	}
+  	else {
+  	    if ( defined $optarg || $mand ) {
+  		if ( $passthrough ) {
+  		    unshift (@$argv, defined $rest ? $starter.$rest : $arg)
+  		      unless defined $optarg;
+  		    return (0);
+  		}
+  		warn ("Value \"", $arg, "\" invalid for option ",
+  		      $opt, " (real number expected)\n");
+  		$error++;
+  		# Push back.
+  		unshift (@$argv, $starter.$rest) if defined $rest;
+  		return (1, undef);
+  	    }
+  	    else {
+  		# Push back.
+  		unshift (@$argv, defined $rest ? $starter.$rest : $arg);
+  		# Supply default value.
+  		$arg = 0.0;
+  	    }
+  	}
+      }
+      else {
+  	die("Getopt::Long internal error (Can't happen)\n");
+      }
+      return (1, $opt, $ctl, $arg, $key);
+  }
+  
+  sub ValidValue ($$$$$) {
+      my ($ctl, $arg, $mand, $argend, $prefix) = @_;
+  
+      if ( $ctl->[CTL_DEST] == CTL_DEST_HASH ) {
+  	return 0 unless $arg =~ /[^=]+=(.*)/;
+  	$arg = $1;
+      }
+  
+      my $type = $ctl->[CTL_TYPE];
+  
+      if ( $type eq 's' ) {	# string
+  	# A mandatory string takes anything.
+  	return (1) if $mand;
+  
+  	return (1) if $arg eq "-";
+  
+  	# Check for option or option list terminator.
+  	return 0 if $arg eq $argend || $arg =~ /^$prefix.+/;
+  	return 1;
+      }
+  
+      elsif ( $type eq 'i'	# numeric/integer
+              || $type eq 'I'	# numeric/integer w/ incr default
+  	    || $type eq 'o' ) { # dec/oct/hex/bin value
+  
+  	my $o_valid = $type eq 'o' ? PAT_XINT : PAT_INT;
+  	return $arg =~ /^$o_valid$/si;
+      }
+  
+      elsif ( $type eq 'f' ) { # real number, int is also ok
+  	my $o_valid = PAT_FLOAT;
+  	return $arg =~ /^$o_valid$/;
+      }
+      die("ValidValue: Cannot happen\n");
+  }
+  
+  # Getopt::Long Configuration.
+  sub Configure (@) {
+      my (@options) = @_;
+  
+      my $prevconfig =
+        [ $error, $debug, $major_version, $minor_version, $caller,
+  	$autoabbrev, $getopt_compat, $ignorecase, $bundling, $order,
+  	$gnu_compat, $passthrough, $genprefix, $auto_version, $auto_help,
+  	$longprefix, $bundling_values ];
+  
+      if ( ref($options[0]) eq 'ARRAY' ) {
+  	( $error, $debug, $major_version, $minor_version, $caller,
+  	  $autoabbrev, $getopt_compat, $ignorecase, $bundling, $order,
+  	  $gnu_compat, $passthrough, $genprefix, $auto_version, $auto_help,
+  	  $longprefix, $bundling_values ) = @{shift(@options)};
+      }
+  
+      my $opt;
+      foreach $opt ( @options ) {
+  	my $try = lc ($opt);
+  	my $action = 1;
+  	if ( $try =~ /^no_?(.*)$/s ) {
+  	    $action = 0;
+  	    $try = $+;
+  	}
+  	if ( ($try eq 'default' or $try eq 'defaults') && $action ) {
+  	    ConfigDefaults ();
+  	}
+  	elsif ( ($try eq 'posix_default' or $try eq 'posix_defaults') ) {
+  	    local $ENV{POSIXLY_CORRECT};
+  	    $ENV{POSIXLY_CORRECT} = 1 if $action;
+  	    ConfigDefaults ();
+  	}
+  	elsif ( $try eq 'auto_abbrev' or $try eq 'autoabbrev' ) {
+  	    $autoabbrev = $action;
+  	}
+  	elsif ( $try eq 'getopt_compat' ) {
+  	    $getopt_compat = $action;
+              $genprefix = $action ? "(--|-|\\+)" : "(--|-)";
+  	}
+  	elsif ( $try eq 'gnu_getopt' ) {
+  	    if ( $action ) {
+  		$gnu_compat = 1;
+  		$bundling = 1;
+  		$getopt_compat = 0;
+                  $genprefix = "(--|-)";
+  		$order = $PERMUTE;
+  		$bundling_values = 0;
+  	    }
+  	}
+  	elsif ( $try eq 'gnu_compat' ) {
+  	    $gnu_compat = $action;
+  	    $bundling = 0;
+  	    $bundling_values = 1;
+  	}
+  	elsif ( $try =~ /^(auto_?)?version$/ ) {
+  	    $auto_version = $action;
+  	}
+  	elsif ( $try =~ /^(auto_?)?help$/ ) {
+  	    $auto_help = $action;
+  	}
+  	elsif ( $try eq 'ignorecase' or $try eq 'ignore_case' ) {
+  	    $ignorecase = $action;
+  	}
+  	elsif ( $try eq 'ignorecase_always' or $try eq 'ignore_case_always' ) {
+  	    $ignorecase = $action ? 2 : 0;
+  	}
+  	elsif ( $try eq 'bundling' ) {
+  	    $bundling = $action;
+  	    $bundling_values = 0 if $action;
+  	}
+  	elsif ( $try eq 'bundling_override' ) {
+  	    $bundling = $action ? 2 : 0;
+  	    $bundling_values = 0 if $action;
+  	}
+  	elsif ( $try eq 'bundling_values' ) {
+  	    $bundling_values = $action;
+  	    $bundling = 0 if $action;
+  	}
+  	elsif ( $try eq 'require_order' ) {
+  	    $order = $action ? $REQUIRE_ORDER : $PERMUTE;
+  	}
+  	elsif ( $try eq 'permute' ) {
+  	    $order = $action ? $PERMUTE : $REQUIRE_ORDER;
+  	}
+  	elsif ( $try eq 'pass_through' or $try eq 'passthrough' ) {
+  	    $passthrough = $action;
+  	}
+  	elsif ( $try =~ /^prefix=(.+)$/ && $action ) {
+  	    $genprefix = $1;
+  	    # Turn into regexp. Needs to be parenthesized!
+  	    $genprefix = "(" . quotemeta($genprefix) . ")";
+  	    eval { '' =~ /$genprefix/; };
+  	    die("Getopt::Long: invalid pattern \"$genprefix\"\n") if $@;
+  	}
+  	elsif ( $try =~ /^prefix_pattern=(.+)$/ && $action ) {
+  	    $genprefix = $1;
+  	    # Parenthesize if needed.
+  	    $genprefix = "(" . $genprefix . ")"
+  	      unless $genprefix =~ /^\(.*\)$/;
+  	    eval { '' =~ m"$genprefix"; };
+  	    die("Getopt::Long: invalid pattern \"$genprefix\"\n") if $@;
+  	}
+  	elsif ( $try =~ /^long_prefix_pattern=(.+)$/ && $action ) {
+  	    $longprefix = $1;
+  	    # Parenthesize if needed.
+  	    $longprefix = "(" . $longprefix . ")"
+  	      unless $longprefix =~ /^\(.*\)$/;
+  	    eval { '' =~ m"$longprefix"; };
+  	    die("Getopt::Long: invalid long prefix pattern \"$longprefix\"\n") if $@;
+  	}
+  	elsif ( $try eq 'debug' ) {
+  	    $debug = $action;
+  	}
+  	else {
+  	    die("Getopt::Long: unknown or erroneous config parameter \"$opt\"\n")
+  	}
+      }
+      $prevconfig;
+  }
+  
+  # Deprecated name.
+  sub config (@) {
+      Configure (@_);
+  }
+  
+  # Issue a standard message for --version.
+  #
+  # The arguments are mostly the same as for Pod::Usage::pod2usage:
+  #
+  #  - a number (exit value)
+  #  - a string (lead in message)
+  #  - a hash with options. See Pod::Usage for details.
+  #
+  sub VersionMessage(@) {
+      # Massage args.
+      my $pa = setup_pa_args("version", @_);
+  
+      my $v = $main::VERSION;
+      my $fh = $pa->{-output} ||
+        ( ($pa->{-exitval} eq "NOEXIT" || $pa->{-exitval} < 2) ? \*STDOUT : \*STDERR );
+  
+      print $fh (defined($pa->{-message}) ? $pa->{-message} : (),
+  	       $0, defined $v ? " version $v" : (),
+  	       "\n",
+  	       "(", __PACKAGE__, "::", "GetOptions",
+  	       " version ",
+  	       defined($Getopt::Long::VERSION_STRING)
+  	         ? $Getopt::Long::VERSION_STRING : $VERSION, ";",
+  	       " Perl version ",
+  	       $] >= 5.006 ? sprintf("%vd", $^V) : $],
+  	       ")\n");
+      exit($pa->{-exitval}) unless $pa->{-exitval} eq "NOEXIT";
+  }
+  
+  # Issue a standard message for --help.
+  #
+  # The arguments are the same as for Pod::Usage::pod2usage:
+  #
+  #  - a number (exit value)
+  #  - a string (lead in message)
+  #  - a hash with options. See Pod::Usage for details.
+  #
+  sub HelpMessage(@) {
+      eval {
+  	require Pod::Usage;
+  	import Pod::Usage;
+  	1;
+      } || die("Cannot provide help: cannot load Pod::Usage\n");
+  
+      # Note that pod2usage will issue a warning if -exitval => NOEXIT.
+      pod2usage(setup_pa_args("help", @_));
+  
+  }
+  
+  # Helper routine to set up a normalized hash ref to be used as
+  # argument to pod2usage.
+  sub setup_pa_args($@) {
+      my $tag = shift;		# who's calling
+  
+      # If called by direct binding to an option, it will get the option
+      # name and value as arguments. Remove these, if so.
+      @_ = () if @_ == 2 && $_[0] eq $tag;
+  
+      my $pa;
+      if ( @_ > 1 ) {
+  	$pa = { @_ };
+      }
+      else {
+  	$pa = shift || {};
+      }
+  
+      # At this point, $pa can be a number (exit value), string
+      # (message) or hash with options.
+  
+      if ( UNIVERSAL::isa($pa, 'HASH') ) {
+  	# Get rid of -msg vs. -message ambiguity.
+  	$pa->{-message} = $pa->{-msg};
+  	delete($pa->{-msg});
+      }
+      elsif ( $pa =~ /^-?\d+$/ ) {
+  	$pa = { -exitval => $pa };
+      }
+      else {
+  	$pa = { -message => $pa };
+      }
+  
+      # These are _our_ defaults.
+      $pa->{-verbose} = 0 unless exists($pa->{-verbose});
+      $pa->{-exitval} = 0 unless exists($pa->{-exitval});
+      $pa;
+  }
+  
+  # Sneak way to know what version the user requested.
+  sub VERSION {
+      $requested_version = $_[1];
+      shift->SUPER::VERSION(@_);
+  }
+  
+  package Getopt::Long::CallBack;
+  
+  sub new {
+      my ($pkg, %atts) = @_;
+      bless { %atts }, $pkg;
+  }
+  
+  sub name {
+      my $self = shift;
+      ''.$self->{name};
+  }
+  
+  use overload
+    # Treat this object as an ordinary string for legacy API.
+    '""'	   => \&name,
+    fallback => 1;
+  
+  1;
+  
+  ################ Documentation ################
+  
+  =head1 NAME
+  
+  Getopt::Long - Extended processing of command line options
+  
+  =head1 SYNOPSIS
+  
+    use Getopt::Long;
+    my $data   = "file.dat";
+    my $length = 24;
+    my $verbose;
+    GetOptions ("length=i" => \$length,    # numeric
+                "file=s"   => \$data,      # string
+                "verbose"  => \$verbose)   # flag
+    or die("Error in command line arguments\n");
+  
+  =head1 DESCRIPTION
+  
+  The Getopt::Long module implements an extended getopt function called
+  GetOptions(). It parses the command line from C<@ARGV>, recognizing
+  and removing specified options and their possible values.
+  
+  This function adheres to the POSIX syntax for command
+  line options, with GNU extensions. In general, this means that options
+  have long names instead of single letters, and are introduced with a
+  double dash "--". Support for bundling of command line options, as was
+  the case with the more traditional single-letter approach, is provided
+  but not enabled by default.
+  
+  =head1 Command Line Options, an Introduction
+  
+  Command line operated programs traditionally take their arguments from
+  the command line, for example filenames or other information that the
+  program needs to know. Besides arguments, these programs often take
+  command line I<options> as well. Options are not necessary for the
+  program to work, hence the name 'option', but are used to modify its
+  default behaviour. For example, a program could do its job quietly,
+  but with a suitable option it could provide verbose information about
+  what it did.
+  
+  Command line options come in several flavours. Historically, they are
+  preceded by a single dash C<->, and consist of a single letter.
+  
+      -l -a -c
+  
+  Usually, these single-character options can be bundled:
+  
+      -lac
+  
+  Options can have values, the value is placed after the option
+  character. Sometimes with whitespace in between, sometimes not:
+  
+      -s 24 -s24
+  
+  Due to the very cryptic nature of these options, another style was
+  developed that used long names. So instead of a cryptic C<-l> one
+  could use the more descriptive C<--long>. To distinguish between a
+  bundle of single-character options and a long one, two dashes are used
+  to precede the option name. Early implementations of long options used
+  a plus C<+> instead. Also, option values could be specified either
+  like
+  
+      --size=24
+  
+  or
+  
+      --size 24
+  
+  The C<+> form is now obsolete and strongly deprecated.
+  
+  =head1 Getting Started with Getopt::Long
+  
+  Getopt::Long is the Perl5 successor of C<newgetopt.pl>. This was the
+  first Perl module that provided support for handling the new style of
+  command line options, in particular long option names, hence the Perl5
+  name Getopt::Long. This module also supports single-character options
+  and bundling.
+  
+  To use Getopt::Long from a Perl program, you must include the
+  following line in your Perl program:
+  
+      use Getopt::Long;
+  
+  This will load the core of the Getopt::Long module and prepare your
+  program for using it. Most of the actual Getopt::Long code is not
+  loaded until you really call one of its functions.
+  
+  In the default configuration, options names may be abbreviated to
+  uniqueness, case does not matter, and a single dash is sufficient,
+  even for long option names. Also, options may be placed between
+  non-option arguments. See L<Configuring Getopt::Long> for more
+  details on how to configure Getopt::Long.
+  
+  =head2 Simple options
+  
+  The most simple options are the ones that take no values. Their mere
+  presence on the command line enables the option. Popular examples are:
+  
+      --all --verbose --quiet --debug
+  
+  Handling simple options is straightforward:
+  
+      my $verbose = '';	# option variable with default value (false)
+      my $all = '';	# option variable with default value (false)
+      GetOptions ('verbose' => \$verbose, 'all' => \$all);
+  
+  The call to GetOptions() parses the command line arguments that are
+  present in C<@ARGV> and sets the option variable to the value C<1> if
+  the option did occur on the command line. Otherwise, the option
+  variable is not touched. Setting the option value to true is often
+  called I<enabling> the option.
+  
+  The option name as specified to the GetOptions() function is called
+  the option I<specification>. Later we'll see that this specification
+  can contain more than just the option name. The reference to the
+  variable is called the option I<destination>.
+  
+  GetOptions() will return a true value if the command line could be
+  processed successfully. Otherwise, it will write error messages using
+  die() and warn(), and return a false result.
+  
+  =head2 A little bit less simple options
+  
+  Getopt::Long supports two useful variants of simple options:
+  I<negatable> options and I<incremental> options.
+  
+  A negatable option is specified with an exclamation mark C<!> after the
+  option name:
+  
+      my $verbose = '';	# option variable with default value (false)
+      GetOptions ('verbose!' => \$verbose);
+  
+  Now, using C<--verbose> on the command line will enable C<$verbose>,
+  as expected. But it is also allowed to use C<--noverbose>, which will
+  disable C<$verbose> by setting its value to C<0>. Using a suitable
+  default value, the program can find out whether C<$verbose> is false
+  by default, or disabled by using C<--noverbose>.
+  
+  An incremental option is specified with a plus C<+> after the
+  option name:
+  
+      my $verbose = '';	# option variable with default value (false)
+      GetOptions ('verbose+' => \$verbose);
+  
+  Using C<--verbose> on the command line will increment the value of
+  C<$verbose>. This way the program can keep track of how many times the
+  option occurred on the command line. For example, each occurrence of
+  C<--verbose> could increase the verbosity level of the program.
+  
+  =head2 Mixing command line option with other arguments
+  
+  Usually programs take command line options as well as other arguments,
+  for example, file names. It is good practice to always specify the
+  options first, and the other arguments last. Getopt::Long will,
+  however, allow the options and arguments to be mixed and 'filter out'
+  all the options before passing the rest of the arguments to the
+  program. To stop Getopt::Long from processing further arguments,
+  insert a double dash C<--> on the command line:
+  
+      --size 24 -- --all
+  
+  In this example, C<--all> will I<not> be treated as an option, but
+  passed to the program unharmed, in C<@ARGV>.
+  
+  =head2 Options with values
+  
+  For options that take values it must be specified whether the option
+  value is required or not, and what kind of value the option expects.
+  
+  Three kinds of values are supported: integer numbers, floating point
+  numbers, and strings.
+  
+  If the option value is required, Getopt::Long will take the
+  command line argument that follows the option and assign this to the
+  option variable. If, however, the option value is specified as
+  optional, this will only be done if that value does not look like a
+  valid command line option itself.
+  
+      my $tag = '';	# option variable with default value
+      GetOptions ('tag=s' => \$tag);
+  
+  In the option specification, the option name is followed by an equals
+  sign C<=> and the letter C<s>. The equals sign indicates that this
+  option requires a value. The letter C<s> indicates that this value is
+  an arbitrary string. Other possible value types are C<i> for integer
+  values, and C<f> for floating point values. Using a colon C<:> instead
+  of the equals sign indicates that the option value is optional. In
+  this case, if no suitable value is supplied, string valued options get
+  an empty string C<''> assigned, while numeric options are set to C<0>.
+  
+  =head2 Options with multiple values
+  
+  Options sometimes take several values. For example, a program could
+  use multiple directories to search for library files:
+  
+      --library lib/stdlib --library lib/extlib
+  
+  To accomplish this behaviour, simply specify an array reference as the
+  destination for the option:
+  
+      GetOptions ("library=s" => \@libfiles);
+  
+  Alternatively, you can specify that the option can have multiple
+  values by adding a "@", and pass a reference to a scalar as the
+  destination:
+  
+      GetOptions ("library=s@" => \$libfiles);
+  
+  Used with the example above, C<@libfiles> c.q. C<@$libfiles> would
+  contain two strings upon completion: C<"lib/stdlib"> and
+  C<"lib/extlib">, in that order. It is also possible to specify that
+  only integer or floating point numbers are acceptable values.
+  
+  Often it is useful to allow comma-separated lists of values as well as
+  multiple occurrences of the options. This is easy using Perl's split()
+  and join() operators:
+  
+      GetOptions ("library=s" => \@libfiles);
+      @libfiles = split(/,/,join(',',@libfiles));
+  
+  Of course, it is important to choose the right separator string for
+  each purpose.
+  
+  Warning: What follows is an experimental feature.
+  
+  Options can take multiple values at once, for example
+  
+      --coordinates 52.2 16.4 --rgbcolor 255 255 149
+  
+  This can be accomplished by adding a repeat specifier to the option
+  specification. Repeat specifiers are very similar to the C<{...}>
+  repeat specifiers that can be used with regular expression patterns.
+  For example, the above command line would be handled as follows:
+  
+      GetOptions('coordinates=f{2}' => \@coor, 'rgbcolor=i{3}' => \@color);
+  
+  The destination for the option must be an array or array reference.
+  
+  It is also possible to specify the minimal and maximal number of
+  arguments an option takes. C<foo=s{2,4}> indicates an option that
+  takes at least two and at most 4 arguments. C<foo=s{1,}> indicates one
+  or more values; C<foo:s{,}> indicates zero or more option values.
+  
+  =head2 Options with hash values
+  
+  If the option destination is a reference to a hash, the option will
+  take, as value, strings of the form I<key>C<=>I<value>. The value will
+  be stored with the specified key in the hash.
+  
+      GetOptions ("define=s" => \%defines);
+  
+  Alternatively you can use:
+  
+      GetOptions ("define=s%" => \$defines);
+  
+  When used with command line options:
+  
+      --define os=linux --define vendor=redhat
+  
+  the hash C<%defines> (or C<%$defines>) will contain two keys, C<"os">
+  with value C<"linux"> and C<"vendor"> with value C<"redhat">. It is
+  also possible to specify that only integer or floating point numbers
+  are acceptable values. The keys are always taken to be strings.
+  
+  =head2 User-defined subroutines to handle options
+  
+  Ultimate control over what should be done when (actually: each time)
+  an option is encountered on the command line can be achieved by
+  designating a reference to a subroutine (or an anonymous subroutine)
+  as the option destination. When GetOptions() encounters the option, it
+  will call the subroutine with two or three arguments. The first
+  argument is the name of the option. (Actually, it is an object that
+  stringifies to the name of the option.) For a scalar or array destination,
+  the second argument is the value to be stored. For a hash destination,
+  the second argument is the key to the hash, and the third argument
+  the value to be stored. It is up to the subroutine to store the value,
+  or do whatever it thinks is appropriate.
+  
+  A trivial application of this mechanism is to implement options that
+  are related to each other. For example:
+  
+      my $verbose = '';	# option variable with default value (false)
+      GetOptions ('verbose' => \$verbose,
+  	        'quiet'   => sub { $verbose = 0 });
+  
+  Here C<--verbose> and C<--quiet> control the same variable
+  C<$verbose>, but with opposite values.
+  
+  If the subroutine needs to signal an error, it should call die() with
+  the desired error message as its argument. GetOptions() will catch the
+  die(), issue the error message, and record that an error result must
+  be returned upon completion.
+  
+  If the text of the error message starts with an exclamation mark C<!>
+  it is interpreted specially by GetOptions(). There is currently one
+  special command implemented: C<die("!FINISH")> will cause GetOptions()
+  to stop processing options, as if it encountered a double dash C<-->.
+  
+  In version 2.37 the first argument to the callback function was
+  changed from string to object. This was done to make room for
+  extensions and more detailed control. The object stringifies to the
+  option name so this change should not introduce compatibility
+  problems.
+  
+  Here is an example of how to access the option name and value from within
+  a subroutine:
+  
+      GetOptions ('opt=i' => \&handler);
+      sub handler {
+          my ($opt_name, $opt_value) = @_;
+          print("Option name is $opt_name and value is $opt_value\n");
+      }
+  
+  =head2 Options with multiple names
+  
+  Often it is user friendly to supply alternate mnemonic names for
+  options. For example C<--height> could be an alternate name for
+  C<--length>. Alternate names can be included in the option
+  specification, separated by vertical bar C<|> characters. To implement
+  the above example:
+  
+      GetOptions ('length|height=f' => \$length);
+  
+  The first name is called the I<primary> name, the other names are
+  called I<aliases>. When using a hash to store options, the key will
+  always be the primary name.
+  
+  Multiple alternate names are possible.
+  
+  =head2 Case and abbreviations
+  
+  Without additional configuration, GetOptions() will ignore the case of
+  option names, and allow the options to be abbreviated to uniqueness.
+  
+      GetOptions ('length|height=f' => \$length, "head" => \$head);
+  
+  This call will allow C<--l> and C<--L> for the length option, but
+  requires a least C<--hea> and C<--hei> for the head and height options.
+  
+  =head2 Summary of Option Specifications
+  
+  Each option specifier consists of two parts: the name specification
+  and the argument specification.
+  
+  The name specification contains the name of the option, optionally
+  followed by a list of alternative names separated by vertical bar
+  characters.
+  
+      length	      option name is "length"
+      length|size|l     name is "length", aliases are "size" and "l"
+  
+  The argument specification is optional. If omitted, the option is
+  considered boolean, a value of 1 will be assigned when the option is
+  used on the command line.
+  
+  The argument specification can be
+  
+  =over 4
+  
+  =item !
+  
+  The option does not take an argument and may be negated by prefixing
+  it with "no" or "no-". E.g. C<"foo!"> will allow C<--foo> (a value of
+  1 will be assigned) as well as C<--nofoo> and C<--no-foo> (a value of
+  0 will be assigned). If the option has aliases, this applies to the
+  aliases as well.
+  
+  Using negation on a single letter option when bundling is in effect is
+  pointless and will result in a warning.
+  
+  =item +
+  
+  The option does not take an argument and will be incremented by 1
+  every time it appears on the command line. E.g. C<"more+">, when used
+  with C<--more --more --more>, will increment the value three times,
+  resulting in a value of 3 (provided it was 0 or undefined at first).
+  
+  The C<+> specifier is ignored if the option destination is not a scalar.
+  
+  =item = I<type> [ I<desttype> ] [ I<repeat> ]
+  
+  The option requires an argument of the given type. Supported types
+  are:
+  
+  =over 4
+  
+  =item s
+  
+  String. An arbitrary sequence of characters. It is valid for the
+  argument to start with C<-> or C<-->.
+  
+  =item i
+  
+  Integer. An optional leading plus or minus sign, followed by a
+  sequence of digits.
+  
+  =item o
+  
+  Extended integer, Perl style. This can be either an optional leading
+  plus or minus sign, followed by a sequence of digits, or an octal
+  string (a zero, optionally followed by '0', '1', .. '7'), or a
+  hexadecimal string (C<0x> followed by '0' .. '9', 'a' .. 'f', case
+  insensitive), or a binary string (C<0b> followed by a series of '0'
+  and '1').
+  
+  =item f
+  
+  Real number. For example C<3.14>, C<-6.23E24> and so on.
+  
+  =back
+  
+  The I<desttype> can be C<@> or C<%> to specify that the option is
+  list or a hash valued. This is only needed when the destination for
+  the option value is not otherwise specified. It should be omitted when
+  not needed.
+  
+  The I<repeat> specifies the number of values this option takes per
+  occurrence on the command line. It has the format C<{> [ I<min> ] [ C<,> [ I<max> ] ] C<}>.
+  
+  I<min> denotes the minimal number of arguments. It defaults to 1 for
+  options with C<=> and to 0 for options with C<:>, see below. Note that
+  I<min> overrules the C<=> / C<:> semantics.
+  
+  I<max> denotes the maximum number of arguments. It must be at least
+  I<min>. If I<max> is omitted, I<but the comma is not>, there is no
+  upper bound to the number of argument values taken.
+  
+  =item : I<type> [ I<desttype> ]
+  
+  Like C<=>, but designates the argument as optional.
+  If omitted, an empty string will be assigned to string values options,
+  and the value zero to numeric options.
+  
+  Note that if a string argument starts with C<-> or C<-->, it will be
+  considered an option on itself.
+  
+  =item : I<number> [ I<desttype> ]
+  
+  Like C<:i>, but if the value is omitted, the I<number> will be assigned.
+  
+  =item : + [ I<desttype> ]
+  
+  Like C<:i>, but if the value is omitted, the current value for the
+  option will be incremented.
+  
+  =back
+  
+  =head1 Advanced Possibilities
+  
+  =head2 Object oriented interface
+  
+  Getopt::Long can be used in an object oriented way as well:
+  
+      use Getopt::Long;
+      $p = Getopt::Long::Parser->new;
+      $p->configure(...configuration options...);
+      if ($p->getoptions(...options descriptions...)) ...
+      if ($p->getoptionsfromarray( \@array, ...options descriptions...)) ...
+  
+  Configuration options can be passed to the constructor:
+  
+      $p = new Getopt::Long::Parser
+               config => [...configuration options...];
+  
+  =head2 Thread Safety
+  
+  Getopt::Long is thread safe when using ithreads as of Perl 5.8.  It is
+  I<not> thread safe when using the older (experimental and now
+  obsolete) threads implementation that was added to Perl 5.005.
+  
+  =head2 Documentation and help texts
+  
+  Getopt::Long encourages the use of Pod::Usage to produce help
+  messages. For example:
+  
+      use Getopt::Long;
+      use Pod::Usage;
+  
+      my $man = 0;
+      my $help = 0;
+  
+      GetOptions('help|?' => \$help, man => \$man) or pod2usage(2);
+      pod2usage(1) if $help;
+      pod2usage(-exitval => 0, -verbose => 2) if $man;
+  
+      __END__
+  
+      =head1 NAME
+  
+      sample - Using Getopt::Long and Pod::Usage
+  
+      =head1 SYNOPSIS
+  
+      sample [options] [file ...]
+  
+       Options:
+         -help            brief help message
+         -man             full documentation
+  
+      =head1 OPTIONS
+  
+      =over 8
+  
+      =item B<-help>
+  
+      Print a brief help message and exits.
+  
+      =item B<-man>
+  
+      Prints the manual page and exits.
+  
+      =back
+  
+      =head1 DESCRIPTION
+  
+      B<This program> will read the given input file(s) and do something
+      useful with the contents thereof.
+  
+      =cut
+  
+  See L<Pod::Usage> for details.
+  
+  =head2 Parsing options from an arbitrary array
+  
+  By default, GetOptions parses the options that are present in the
+  global array C<@ARGV>. A special entry C<GetOptionsFromArray> can be
+  used to parse options from an arbitrary array.
+  
+      use Getopt::Long qw(GetOptionsFromArray);
+      $ret = GetOptionsFromArray(\@myopts, ...);
+  
+  When used like this, options and their possible values are removed
+  from C<@myopts>, the global C<@ARGV> is not touched at all.
+  
+  The following two calls behave identically:
+  
+      $ret = GetOptions( ... );
+      $ret = GetOptionsFromArray(\@ARGV, ... );
+  
+  This also means that a first argument hash reference now becomes the
+  second argument:
+  
+      $ret = GetOptions(\%opts, ... );
+      $ret = GetOptionsFromArray(\@ARGV, \%opts, ... );
+  
+  =head2 Parsing options from an arbitrary string
+  
+  A special entry C<GetOptionsFromString> can be used to parse options
+  from an arbitrary string.
+  
+      use Getopt::Long qw(GetOptionsFromString);
+      $ret = GetOptionsFromString($string, ...);
+  
+  The contents of the string are split into arguments using a call to
+  C<Text::ParseWords::shellwords>. As with C<GetOptionsFromArray>, the
+  global C<@ARGV> is not touched.
+  
+  It is possible that, upon completion, not all arguments in the string
+  have been processed. C<GetOptionsFromString> will, when called in list
+  context, return both the return status and an array reference to any
+  remaining arguments:
+  
+      ($ret, $args) = GetOptionsFromString($string, ... );
+  
+  If any arguments remain, and C<GetOptionsFromString> was not called in
+  list context, a message will be given and C<GetOptionsFromString> will
+  return failure.
+  
+  As with GetOptionsFromArray, a first argument hash reference now
+  becomes the second argument.
+  
+  =head2 Storing options values in a hash
+  
+  Sometimes, for example when there are a lot of options, having a
+  separate variable for each of them can be cumbersome. GetOptions()
+  supports, as an alternative mechanism, storing options values in a
+  hash.
+  
+  To obtain this, a reference to a hash must be passed I<as the first
+  argument> to GetOptions(). For each option that is specified on the
+  command line, the option value will be stored in the hash with the
+  option name as key. Options that are not actually used on the command
+  line will not be put in the hash, on other words,
+  C<exists($h{option})> (or defined()) can be used to test if an option
+  was used. The drawback is that warnings will be issued if the program
+  runs under C<use strict> and uses C<$h{option}> without testing with
+  exists() or defined() first.
+  
+      my %h = ();
+      GetOptions (\%h, 'length=i');	# will store in $h{length}
+  
+  For options that take list or hash values, it is necessary to indicate
+  this by appending an C<@> or C<%> sign after the type:
+  
+      GetOptions (\%h, 'colours=s@');	# will push to @{$h{colours}}
+  
+  To make things more complicated, the hash may contain references to
+  the actual destinations, for example:
+  
+      my $len = 0;
+      my %h = ('length' => \$len);
+      GetOptions (\%h, 'length=i');	# will store in $len
+  
+  This example is fully equivalent with:
+  
+      my $len = 0;
+      GetOptions ('length=i' => \$len);	# will store in $len
+  
+  Any mixture is possible. For example, the most frequently used options
+  could be stored in variables while all other options get stored in the
+  hash:
+  
+      my $verbose = 0;			# frequently referred
+      my $debug = 0;			# frequently referred
+      my %h = ('verbose' => \$verbose, 'debug' => \$debug);
+      GetOptions (\%h, 'verbose', 'debug', 'filter', 'size=i');
+      if ( $verbose ) { ... }
+      if ( exists $h{filter} ) { ... option 'filter' was specified ... }
+  
+  =head2 Bundling
+  
+  With bundling it is possible to set several single-character options
+  at once. For example if C<a>, C<v> and C<x> are all valid options,
+  
+      -vax
+  
+  will set all three.
+  
+  Getopt::Long supports three styles of bundling. To enable bundling, a
+  call to Getopt::Long::Configure is required.
+  
+  The simplest style of bundling can be enabled with:
+  
+      Getopt::Long::Configure ("bundling");
+  
+  Configured this way, single-character options can be bundled but long
+  options B<must> always start with a double dash C<--> to avoid
+  ambiguity. For example, when C<vax>, C<a>, C<v> and C<x> are all valid
+  options,
+  
+      -vax
+  
+  will set C<a>, C<v> and C<x>, but
+  
+      --vax
+  
+  will set C<vax>.
+  
+  The second style of bundling lifts this restriction. It can be enabled
+  with:
+  
+      Getopt::Long::Configure ("bundling_override");
+  
+  Now, C<-vax> will set the option C<vax>.
+  
+  In all of the above cases, option values may be inserted in the
+  bundle. For example:
+  
+      -h24w80
+  
+  is equivalent to
+  
+      -h 24 -w 80
+  
+  A third style of bundling allows only values to be bundled with
+  options. It can be enabled with:
+  
+      Getopt::Long::Configure ("bundling_values");
+  
+  Now, C<-h24> will set the option C<h> to C<24>, but option bundles
+  like C<-vxa> and C<-h24w80> are flagged as errors.
+  
+  Enabling C<bundling_values> will disable the other two styles of
+  bundling.
+  
+  When configured for bundling, single-character options are matched
+  case sensitive while long options are matched case insensitive. To
+  have the single-character options matched case insensitive as well,
+  use:
+  
+      Getopt::Long::Configure ("bundling", "ignorecase_always");
+  
+  It goes without saying that bundling can be quite confusing.
+  
+  =head2 The lonesome dash
+  
+  Normally, a lone dash C<-> on the command line will not be considered
+  an option. Option processing will terminate (unless "permute" is
+  configured) and the dash will be left in C<@ARGV>.
+  
+  It is possible to get special treatment for a lone dash. This can be
+  achieved by adding an option specification with an empty name, for
+  example:
+  
+      GetOptions ('' => \$stdio);
+  
+  A lone dash on the command line will now be a legal option, and using
+  it will set variable C<$stdio>.
+  
+  =head2 Argument callback
+  
+  A special option 'name' C<< <> >> can be used to designate a subroutine
+  to handle non-option arguments. When GetOptions() encounters an
+  argument that does not look like an option, it will immediately call this
+  subroutine and passes it one parameter: the argument name. Well, actually
+  it is an object that stringifies to the argument name.
+  
+  For example:
+  
+      my $width = 80;
+      sub process { ... }
+      GetOptions ('width=i' => \$width, '<>' => \&process);
+  
+  When applied to the following command line:
+  
+      arg1 --width=72 arg2 --width=60 arg3
+  
+  This will call
+  C<process("arg1")> while C<$width> is C<80>,
+  C<process("arg2")> while C<$width> is C<72>, and
+  C<process("arg3")> while C<$width> is C<60>.
+  
+  This feature requires configuration option B<permute>, see section
+  L<Configuring Getopt::Long>.
+  
+  =head1 Configuring Getopt::Long
+  
+  Getopt::Long can be configured by calling subroutine
+  Getopt::Long::Configure(). This subroutine takes a list of quoted
+  strings, each specifying a configuration option to be enabled, e.g.
+  C<ignore_case>, or disabled, e.g. C<no_ignore_case>. Case does not
+  matter. Multiple calls to Configure() are possible.
+  
+  Alternatively, as of version 2.24, the configuration options may be
+  passed together with the C<use> statement:
+  
+      use Getopt::Long qw(:config no_ignore_case bundling);
+  
+  The following options are available:
+  
+  =over 12
+  
+  =item default
+  
+  This option causes all configuration options to be reset to their
+  default values.
+  
+  =item posix_default
+  
+  This option causes all configuration options to be reset to their
+  default values as if the environment variable POSIXLY_CORRECT had
+  been set.
+  
+  =item auto_abbrev
+  
+  Allow option names to be abbreviated to uniqueness.
+  Default is enabled unless environment variable
+  POSIXLY_CORRECT has been set, in which case C<auto_abbrev> is disabled.
+  
+  =item getopt_compat
+  
+  Allow C<+> to start options.
+  Default is enabled unless environment variable
+  POSIXLY_CORRECT has been set, in which case C<getopt_compat> is disabled.
+  
+  =item gnu_compat
+  
+  C<gnu_compat> controls whether C<--opt=> is allowed, and what it should
+  do. Without C<gnu_compat>, C<--opt=> gives an error. With C<gnu_compat>,
+  C<--opt=> will give option C<opt> and empty value.
+  This is the way GNU getopt_long() does it.
+  
+  Note that C<--opt value> is still accepted, even though GNU
+  getopt_long() doesn't.
+  
+  =item gnu_getopt
+  
+  This is a short way of setting C<gnu_compat> C<bundling> C<permute>
+  C<no_getopt_compat>. With C<gnu_getopt>, command line handling should be
+  reasonably compatible with GNU getopt_long().
+  
+  =item require_order
+  
+  Whether command line arguments are allowed to be mixed with options.
+  Default is disabled unless environment variable
+  POSIXLY_CORRECT has been set, in which case C<require_order> is enabled.
+  
+  See also C<permute>, which is the opposite of C<require_order>.
+  
+  =item permute
+  
+  Whether command line arguments are allowed to be mixed with options.
+  Default is enabled unless environment variable
+  POSIXLY_CORRECT has been set, in which case C<permute> is disabled.
+  Note that C<permute> is the opposite of C<require_order>.
+  
+  If C<permute> is enabled, this means that
+  
+      --foo arg1 --bar arg2 arg3
+  
+  is equivalent to
+  
+      --foo --bar arg1 arg2 arg3
+  
+  If an argument callback routine is specified, C<@ARGV> will always be
+  empty upon successful return of GetOptions() since all options have been
+  processed. The only exception is when C<--> is used:
+  
+      --foo arg1 --bar arg2 -- arg3
+  
+  This will call the callback routine for arg1 and arg2, and then
+  terminate GetOptions() leaving C<"arg3"> in C<@ARGV>.
+  
+  If C<require_order> is enabled, options processing
+  terminates when the first non-option is encountered.
+  
+      --foo arg1 --bar arg2 arg3
+  
+  is equivalent to
+  
+      --foo -- arg1 --bar arg2 arg3
+  
+  If C<pass_through> is also enabled, options processing will terminate
+  at the first unrecognized option, or non-option, whichever comes
+  first.
+  
+  =item bundling (default: disabled)
+  
+  Enabling this option will allow single-character options to be
+  bundled. To distinguish bundles from long option names, long options
+  I<must> be introduced with C<--> and bundles with C<->.
+  
+  Note that, if you have options C<a>, C<l> and C<all>, and
+  auto_abbrev enabled, possible arguments and option settings are:
+  
+      using argument               sets option(s)
+      ------------------------------------------
+      -a, --a                      a
+      -l, --l                      l
+      -al, -la, -ala, -all,...     a, l
+      --al, --all                  all
+  
+  The surprising part is that C<--a> sets option C<a> (due to auto
+  completion), not C<all>.
+  
+  Note: disabling C<bundling> also disables C<bundling_override>.
+  
+  =item bundling_override (default: disabled)
+  
+  If C<bundling_override> is enabled, bundling is enabled as with
+  C<bundling> but now long option names override option bundles.
+  
+  Note: disabling C<bundling_override> also disables C<bundling>.
+  
+  B<Note:> Using option bundling can easily lead to unexpected results,
+  especially when mixing long options and bundles. Caveat emptor.
+  
+  =item ignore_case  (default: enabled)
+  
+  If enabled, case is ignored when matching option names. If, however,
+  bundling is enabled as well, single character options will be treated
+  case-sensitive.
+  
+  With C<ignore_case>, option specifications for options that only
+  differ in case, e.g., C<"foo"> and C<"Foo">, will be flagged as
+  duplicates.
+  
+  Note: disabling C<ignore_case> also disables C<ignore_case_always>.
+  
+  =item ignore_case_always (default: disabled)
+  
+  When bundling is in effect, case is ignored on single-character
+  options also.
+  
+  Note: disabling C<ignore_case_always> also disables C<ignore_case>.
+  
+  =item auto_version (default:disabled)
+  
+  Automatically provide support for the B<--version> option if
+  the application did not specify a handler for this option itself.
+  
+  Getopt::Long will provide a standard version message that includes the
+  program name, its version (if $main::VERSION is defined), and the
+  versions of Getopt::Long and Perl. The message will be written to
+  standard output and processing will terminate.
+  
+  C<auto_version> will be enabled if the calling program explicitly
+  specified a version number higher than 2.32 in the C<use> or
+  C<require> statement.
+  
+  =item auto_help (default:disabled)
+  
+  Automatically provide support for the B<--help> and B<-?> options if
+  the application did not specify a handler for this option itself.
+  
+  Getopt::Long will provide a help message using module L<Pod::Usage>. The
+  message, derived from the SYNOPSIS POD section, will be written to
+  standard output and processing will terminate.
+  
+  C<auto_help> will be enabled if the calling program explicitly
+  specified a version number higher than 2.32 in the C<use> or
+  C<require> statement.
+  
+  =item pass_through (default: disabled)
+  
+  With C<pass_through> anything that is unknown, ambiguous or supplied with
+  an invalid option will not be flagged as an error. Instead the unknown
+  option(s) will be passed to the catchall C<< <> >> if present, otherwise
+  through to C<@ARGV>. This makes it possible to write wrapper scripts that
+  process only part of the user supplied command line arguments, and pass the
+  remaining options to some other program.
+  
+  If C<require_order> is enabled, options processing will terminate at the
+  first unrecognized option, or non-option, whichever comes first and all
+  remaining arguments are passed to C<@ARGV> instead of the catchall
+  C<< <> >> if present.  However, if C<permute> is enabled instead, results
+  can become confusing.
+  
+  Note that the options terminator (default C<-->), if present, will
+  also be passed through in C<@ARGV>.
+  
+  =item prefix
+  
+  The string that starts options. If a constant string is not
+  sufficient, see C<prefix_pattern>.
+  
+  =item prefix_pattern
+  
+  A Perl pattern that identifies the strings that introduce options.
+  Default is C<--|-|\+> unless environment variable
+  POSIXLY_CORRECT has been set, in which case it is C<--|->.
+  
+  =item long_prefix_pattern
+  
+  A Perl pattern that allows the disambiguation of long and short
+  prefixes. Default is C<-->.
+  
+  Typically you only need to set this if you are using nonstandard
+  prefixes and want some or all of them to have the same semantics as
+  '--' does under normal circumstances.
+  
+  For example, setting prefix_pattern to C<--|-|\+|\/> and
+  long_prefix_pattern to C<--|\/> would add Win32 style argument
+  handling.
+  
+  =item debug (default: disabled)
+  
+  Enable debugging output.
+  
+  =back
+  
+  =head1 Exportable Methods
+  
+  =over
+  
+  =item VersionMessage
+  
+  This subroutine provides a standard version message. Its argument can be:
+  
+  =over 4
+  
+  =item *
+  
+  A string containing the text of a message to print I<before> printing
+  the standard message.
+  
+  =item *
+  
+  A numeric value corresponding to the desired exit status.
+  
+  =item *
+  
+  A reference to a hash.
+  
+  =back
+  
+  If more than one argument is given then the entire argument list is
+  assumed to be a hash.  If a hash is supplied (either as a reference or
+  as a list) it should contain one or more elements with the following
+  keys:
+  
+  =over 4
+  
+  =item C<-message>
+  
+  =item C<-msg>
+  
+  The text of a message to print immediately prior to printing the
+  program's usage message.
+  
+  =item C<-exitval>
+  
+  The desired exit status to pass to the B<exit()> function.
+  This should be an integer, or else the string "NOEXIT" to
+  indicate that control should simply be returned without
+  terminating the invoking process.
+  
+  =item C<-output>
+  
+  A reference to a filehandle, or the pathname of a file to which the
+  usage message should be written. The default is C<\*STDERR> unless the
+  exit value is less than 2 (in which case the default is C<\*STDOUT>).
+  
+  =back
+  
+  You cannot tie this routine directly to an option, e.g.:
+  
+      GetOptions("version" => \&VersionMessage);
+  
+  Use this instead:
+  
+      GetOptions("version" => sub { VersionMessage() });
+  
+  =item HelpMessage
+  
+  This subroutine produces a standard help message, derived from the
+  program's POD section SYNOPSIS using L<Pod::Usage>. It takes the same
+  arguments as VersionMessage(). In particular, you cannot tie it
+  directly to an option, e.g.:
+  
+      GetOptions("help" => \&HelpMessage);
+  
+  Use this instead:
+  
+      GetOptions("help" => sub { HelpMessage() });
+  
+  =back
+  
+  =head1 Return values and Errors
+  
+  Configuration errors and errors in the option definitions are
+  signalled using die() and will terminate the calling program unless
+  the call to Getopt::Long::GetOptions() was embedded in C<eval { ...
+  }>, or die() was trapped using C<$SIG{__DIE__}>.
+  
+  GetOptions returns true to indicate success.
+  It returns false when the function detected one or more errors during
+  option parsing. These errors are signalled using warn() and can be
+  trapped with C<$SIG{__WARN__}>.
+  
+  =head1 Legacy
+  
+  The earliest development of C<newgetopt.pl> started in 1990, with Perl
+  version 4. As a result, its development, and the development of
+  Getopt::Long, has gone through several stages. Since backward
+  compatibility has always been extremely important, the current version
+  of Getopt::Long still supports a lot of constructs that nowadays are
+  no longer necessary or otherwise unwanted. This section describes
+  briefly some of these 'features'.
+  
+  =head2 Default destinations
+  
+  When no destination is specified for an option, GetOptions will store
+  the resultant value in a global variable named C<opt_>I<XXX>, where
+  I<XXX> is the primary name of this option. When a program executes
+  under C<use strict> (recommended), these variables must be
+  pre-declared with our() or C<use vars>.
+  
+      our $opt_length = 0;
+      GetOptions ('length=i');	# will store in $opt_length
+  
+  To yield a usable Perl variable, characters that are not part of the
+  syntax for variables are translated to underscores. For example,
+  C<--fpp-struct-return> will set the variable
+  C<$opt_fpp_struct_return>. Note that this variable resides in the
+  namespace of the calling program, not necessarily C<main>. For
+  example:
+  
+      GetOptions ("size=i", "sizes=i@");
+  
+  with command line "-size 10 -sizes 24 -sizes 48" will perform the
+  equivalent of the assignments
+  
+      $opt_size = 10;
+      @opt_sizes = (24, 48);
+  
+  =head2 Alternative option starters
+  
+  A string of alternative option starter characters may be passed as the
+  first argument (or the first argument after a leading hash reference
+  argument).
+  
+      my $len = 0;
+      GetOptions ('/', 'length=i' => $len);
+  
+  Now the command line may look like:
+  
+      /length 24 -- arg
+  
+  Note that to terminate options processing still requires a double dash
+  C<-->.
+  
+  GetOptions() will not interpret a leading C<< "<>" >> as option starters
+  if the next argument is a reference. To force C<< "<" >> and C<< ">" >> as
+  option starters, use C<< "><" >>. Confusing? Well, B<using a starter
+  argument is strongly deprecated> anyway.
+  
+  =head2 Configuration variables
+  
+  Previous versions of Getopt::Long used variables for the purpose of
+  configuring. Although manipulating these variables still work, it is
+  strongly encouraged to use the C<Configure> routine that was introduced
+  in version 2.17. Besides, it is much easier.
+  
+  =head1 Tips and Techniques
+  
+  =head2 Pushing multiple values in a hash option
+  
+  Sometimes you want to combine the best of hashes and arrays. For
+  example, the command line:
+  
+    --list add=first --list add=second --list add=third
+  
+  where each successive 'list add' option will push the value of add
+  into array ref $list->{'add'}. The result would be like
+  
+    $list->{add} = [qw(first second third)];
+  
+  This can be accomplished with a destination routine:
+  
+    GetOptions('list=s%' =>
+                 sub { push(@{$list{$_[1]}}, $_[2]) });
+  
+  =head1 Troubleshooting
+  
+  =head2 GetOptions does not return a false result when an option is not supplied
+  
+  That's why they're called 'options'.
+  
+  =head2 GetOptions does not split the command line correctly
+  
+  The command line is not split by GetOptions, but by the command line
+  interpreter (CLI). On Unix, this is the shell. On Windows, it is
+  COMMAND.COM or CMD.EXE. Other operating systems have other CLIs.
+  
+  It is important to know that these CLIs may behave different when the
+  command line contains special characters, in particular quotes or
+  backslashes. For example, with Unix shells you can use single quotes
+  (C<'>) and double quotes (C<">) to group words together. The following
+  alternatives are equivalent on Unix:
+  
+      "two words"
+      'two words'
+      two\ words
+  
+  In case of doubt, insert the following statement in front of your Perl
+  program:
+  
+      print STDERR (join("|",@ARGV),"\n");
+  
+  to verify how your CLI passes the arguments to the program.
+  
+  =head2 Undefined subroutine &main::GetOptions called
+  
+  Are you running Windows, and did you write
+  
+      use GetOpt::Long;
+  
+  (note the capital 'O')?
+  
+  =head2 How do I put a "-?" option into a Getopt::Long?
+  
+  You can only obtain this using an alias, and Getopt::Long of at least
+  version 2.13.
+  
+      use Getopt::Long;
+      GetOptions ("help|?");    # -help and -? will both set $opt_help
+  
+  Other characters that can't appear in Perl identifiers are also supported
+  as aliases with Getopt::Long of at least version 2.39.
+  
+  As of version 2.32 Getopt::Long provides auto-help, a quick and easy way
+  to add the options --help and -? to your program, and handle them.
+  
+  See C<auto_help> in section L<Configuring Getopt::Long>.
+  
+  =head1 AUTHOR
+  
+  Johan Vromans <jvromans@squirrel.nl>
+  
+  =head1 COPYRIGHT AND DISCLAIMER
+  
+  This program is Copyright 1990,2015 by Johan Vromans.
+  This program is free software; you can redistribute it and/or
+  modify it under the terms of the Perl Artistic License or the
+  GNU General Public License as published by the Free Software
+  Foundation; either version 2 of the License, or (at your option) any
+  later version.
+  
+  This program is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+  
+  If you do not have a copy of the GNU General Public License write to
+  the Free Software Foundation, Inc., 675 Mass Ave, Cambridge,
+  MA 02139, USA.
+  
+  =cut
+  
+GETOPT_LONG
 
 $fatpacked{"HTTP/Tiny.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'HTTP_TINY';
   # vim: ts=4 sts=4 sw=4 et:
@@ -5916,7 +10826,7 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   use Carp ();
   #use Devel::Peek;
   
-  $JSON::PP::VERSION = '2.94';
+  $JSON::PP::VERSION = '2.97001';
   
   @JSON::PP::EXPORT = qw(encode_json decode_json from_json to_json);
   
@@ -6318,6 +11228,8 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
               return;
           } else {
               no warnings 'numeric';
+              # if the utf8 flag is on, it almost certainly started as a string
+              return if utf8::is_utf8($value);
               # detect numbers
               # string & "" -> ""
               # number & "" -> 0 (with warning)
@@ -7307,7 +12219,7 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   $JSON::PP::true  = do { bless \(my $dummy = 1), "JSON::PP::Boolean" };
   $JSON::PP::false = do { bless \(my $dummy = 0), "JSON::PP::Boolean" };
   
-  sub is_bool { defined $_[0] and UNIVERSAL::isa($_[0], "JSON::PP::Boolean"); }
+  sub is_bool { blessed $_[0] and $_[0]->isa("JSON::PP::Boolean"); }
   
   sub true  { $JSON::PP::true  }
   sub false { $JSON::PP::false }
@@ -7556,7 +12468,7 @@ $fatpacked{"JSON/PP.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'JSON_PP
   
   =head1 VERSION
   
-      2.91_04
+      2.97001
   
   =head1 DESCRIPTION
   
@@ -8764,7 +13676,7 @@ $fatpacked{"JSON/PP/Boolean.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
       fallback => 1,
   );
   
-  $JSON::PP::Boolean::VERSION = '2.94';
+  $JSON::PP::Boolean::VERSION = '2.97001';
   
   1;
   
@@ -10617,10 +15529,14 @@ MEMOIZE_STORABLE
 $fatpacked{"Module/CoreList.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<'MODULE_CORELIST';
   package Module::CoreList;
   use strict;
-  use vars qw/$VERSION %released %version %families %upstream
-  	    %bug_tracker %deprecated %delta/;
+  
+  our ( %released, %version, %families, %upstream, %bug_tracker, %deprecated, %delta );
+  
   use version;
-  $VERSION = '5.20170530';
+  our $VERSION = '5.20180120';
+  
+  sub PKG_PATTERN () { q#\A[a-zA-Z_][0-9a-zA-Z_]*(?:(::|')[0-9a-zA-Z_]+)*\z# }
+  sub _looks_like_invocant ($) { local $@; !!eval { $_[0]->isa(__PACKAGE__) } }
   
   sub _undelta {
       my ($delta) = @_;
@@ -10661,9 +15577,8 @@ $fatpacked{"Module/CoreList.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
   
   
   sub first_release_raw {
+      shift if defined $_[1] and $_[1] =~ PKG_PATTERN and _looks_like_invocant $_[0];
       my $module = shift;
-      $module = shift if eval { $module->isa(__PACKAGE__) }
-        and scalar @_ and $_[0] =~ m#\A[a-zA-Z_][0-9a-zA-Z_]*(?:(::|')[0-9a-zA-Z_]+)*\z#;
       my $version = shift;
   
       my @perls = $version
@@ -10687,10 +15602,9 @@ $fatpacked{"Module/CoreList.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
   }
   
   sub find_modules {
+      shift if _looks_like_invocant $_[0];
       my $regex = shift;
-      $regex = shift if eval { $regex->isa(__PACKAGE__) };
-      my @perls = @_;
-      @perls = keys %version unless @perls;
+      my @perls = @_ ? @_ : keys %version;
   
       my %mods;
       foreach (@perls) {
@@ -10702,30 +15616,23 @@ $fatpacked{"Module/CoreList.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
   }
   
   sub find_version {
+      shift if _looks_like_invocant $_[0];
       my $v = shift;
-      if ($v->isa(__PACKAGE__)) {
-          $v = shift;
-          return if not defined $v;
-      }
-      return $version{$v} if defined $version{$v};
+      return $version{$v} if defined $v and defined $version{$v};
       return;
   }
   
   sub is_deprecated {
+      shift if defined $_[1] and $_[1] =~ PKG_PATTERN and _looks_like_invocant $_[0];
       my $module = shift;
-      $module = shift if eval { $module->isa(__PACKAGE__) }
-        and scalar @_ and $_[0] =~ m#\A[a-zA-Z_][0-9a-zA-Z_]*(?:(::|')[0-9a-zA-Z_]+)*\z#;
-      my $perl_version = shift;
-      $perl_version ||= $];
+      my $perl_version = shift || $];
       return unless $module && exists $deprecated{$perl_version}{$module};
       return $deprecated{$perl_version}{$module};
   }
   
   sub deprecated_in {
-      my $module = shift;
-      $module = shift if eval { $module->isa(__PACKAGE__) }
-        and scalar @_ and $_[0] =~ m#\A[a-zA-Z_][0-9a-zA-Z_]*(?:(::|')[0-9a-zA-Z_]+)*\z#;
-      return unless $module;
+      shift if defined $_[1] and $_[1] =~ PKG_PATTERN and _looks_like_invocant $_[0];
+      my $module = shift or return;
       my @perls = grep { exists $deprecated{$_}{$module} } keys %deprecated;
       return unless @perls;
       require List::Util;
@@ -10743,9 +15650,8 @@ $fatpacked{"Module/CoreList.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
   }
   
   sub removed_raw {
+    shift if defined $_[1] and $_[1] =~ PKG_PATTERN and _looks_like_invocant $_[0];
     my $mod = shift;
-    $mod = shift if eval { $mod->isa(__PACKAGE__) }
-        and scalar @_ and $_[0] =~ m#\A[a-zA-Z_][0-9a-zA-Z_]*(?:(::|')[0-9a-zA-Z_]+)*\z#;
     return unless my @perls = sort { $a cmp $b } first_release_raw($mod);
     my $last = pop @perls;
     my @removed = grep { $_ > $last } sort { $a cmp $b } keys %version;
@@ -10753,8 +15659,8 @@ $fatpacked{"Module/CoreList.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
   }
   
   sub changes_between {
+    shift if _looks_like_invocant $_[0];
     my $left_ver = shift;
-    $left_ver = shift if eval { $left_ver->isa(__PACKAGE__) };
     my $right_ver = shift;
   
     my $left  = $version{ $left_ver };
@@ -10937,7 +15843,20 @@ $fatpacked{"Module/CoreList.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
       5.025010 => '2017-02-20',
       5.025011 => '2017-03-20',
       5.025012 => '2017-04-20',
-      5.026000 => '????-??-??',
+      5.026000 => '2017-05-30',
+      5.027000 => '2017-05-31',
+      5.027001 => '2017-06-20',
+      5.022004 => '2017-07-15',
+      5.024002 => '2017-07-15',
+      5.027002 => '2017-07-20',
+      5.027003 => '2017-08-21',
+      5.027004 => '2017-09-20',
+      5.024003 => '2017-09-22',
+      5.026001 => '2017-09-22',
+      5.027005 => '2017-10-20',
+      5.027006 => '2017-11-20',
+      5.027007 => '2017-12-20',
+      5.027008 => '2018-01-20',
     );
   
   for my $version ( sort { $a <=> $b } keys %released ) {
@@ -24725,16 +29644,913 @@ $fatpacked{"Module/CoreList.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
           removed => {
           }
       },
+      5.027000 => {
+          delta_from => 5.026000,
+          changed => {
+              'Attribute::Handlers'   => '1.00',
+              'B::Concise'            => '1.000',
+              'B::Deparse'            => '1.41',
+              'B::Op_private'         => '5.027000',
+              'Config'                => '5.027',
+              'Module::CoreList'      => '5.20170531',
+              'Module::CoreList::TieHashDelta'=> '5.20170531',
+              'Module::CoreList::Utils'=> '5.20170531',
+              'O'                     => '1.02',
+              'attributes'            => '0.3',
+              'feature'               => '1.48',
+          },
+          removed => {
+          }
+      },
+      5.027001 => {
+          delta_from => 5.027,
+          changed => {
+              'App::Prove'            => '3.39',
+              'App::Prove::State'     => '3.39',
+              'App::Prove::State::Result'=> '3.39',
+              'App::Prove::State::Result::Test'=> '3.39',
+              'Archive::Tar'          => '2.26',
+              'Archive::Tar::Constant'=> '2.26',
+              'Archive::Tar::File'    => '2.26',
+              'B::Op_private'         => '5.027001',
+              'B::Terse'              => '1.08',
+              'Config'                => '5.027001',
+              'Devel::PPPort'         => '3.36',
+              'DirHandle'             => '1.05',
+              'ExtUtils::Command'     => '7.30',
+              'ExtUtils::Command::MM' => '7.30',
+              'ExtUtils::Install'     => '2.14',
+              'ExtUtils::Installed'   => '2.14',
+              'ExtUtils::Liblist'     => '7.30',
+              'ExtUtils::Liblist::Kid'=> '7.30',
+              'ExtUtils::MM'          => '7.30',
+              'ExtUtils::MM_AIX'      => '7.30',
+              'ExtUtils::MM_Any'      => '7.30',
+              'ExtUtils::MM_BeOS'     => '7.30',
+              'ExtUtils::MM_Cygwin'   => '7.30',
+              'ExtUtils::MM_DOS'      => '7.30',
+              'ExtUtils::MM_Darwin'   => '7.30',
+              'ExtUtils::MM_MacOS'    => '7.30',
+              'ExtUtils::MM_NW5'      => '7.30',
+              'ExtUtils::MM_OS2'      => '7.30',
+              'ExtUtils::MM_QNX'      => '7.30',
+              'ExtUtils::MM_UWIN'     => '7.30',
+              'ExtUtils::MM_Unix'     => '7.30',
+              'ExtUtils::MM_VMS'      => '7.30',
+              'ExtUtils::MM_VOS'      => '7.30',
+              'ExtUtils::MM_Win32'    => '7.30',
+              'ExtUtils::MM_Win95'    => '7.30',
+              'ExtUtils::MY'          => '7.30',
+              'ExtUtils::MakeMaker'   => '7.30',
+              'ExtUtils::MakeMaker::Config'=> '7.30',
+              'ExtUtils::MakeMaker::Locale'=> '7.30',
+              'ExtUtils::MakeMaker::version'=> '7.30',
+              'ExtUtils::MakeMaker::version::regex'=> '7.30',
+              'ExtUtils::Mkbootstrap' => '7.30',
+              'ExtUtils::Mksymlists'  => '7.30',
+              'ExtUtils::Packlist'    => '2.14',
+              'ExtUtils::testlib'     => '7.30',
+              'File::Path'            => '2.14',
+              'Filter::Util::Call'    => '1.57',
+              'GDBM_File'             => '1.16',
+              'Getopt::Long'          => '2.5',
+              'IO::Socket::IP'        => '0.39',
+              'IPC::Cmd'              => '0.98',
+              'JSON::PP'              => '2.94',
+              'JSON::PP::Boolean'     => '2.94',
+              'Locale::Codes'         => '3.52',
+              'Locale::Codes::Constants'=> '3.52',
+              'Locale::Codes::Country'=> '3.52',
+              'Locale::Codes::Country_Codes'=> '3.52',
+              'Locale::Codes::Country_Retired'=> '3.52',
+              'Locale::Codes::Currency'=> '3.52',
+              'Locale::Codes::Currency_Codes'=> '3.52',
+              'Locale::Codes::Currency_Retired'=> '3.52',
+              'Locale::Codes::LangExt'=> '3.52',
+              'Locale::Codes::LangExt_Codes'=> '3.52',
+              'Locale::Codes::LangExt_Retired'=> '3.52',
+              'Locale::Codes::LangFam'=> '3.52',
+              'Locale::Codes::LangFam_Codes'=> '3.52',
+              'Locale::Codes::LangFam_Retired'=> '3.52',
+              'Locale::Codes::LangVar'=> '3.52',
+              'Locale::Codes::LangVar_Codes'=> '3.52',
+              'Locale::Codes::LangVar_Retired'=> '3.52',
+              'Locale::Codes::Language'=> '3.52',
+              'Locale::Codes::Language_Codes'=> '3.52',
+              'Locale::Codes::Language_Retired'=> '3.52',
+              'Locale::Codes::Script' => '3.52',
+              'Locale::Codes::Script_Codes'=> '3.52',
+              'Locale::Codes::Script_Retired'=> '3.52',
+              'Locale::Country'       => '3.52',
+              'Locale::Currency'      => '3.52',
+              'Locale::Language'      => '3.52',
+              'Locale::Script'        => '3.52',
+              'Module::CoreList'      => '5.20170621',
+              'Module::CoreList::TieHashDelta'=> '5.20170621',
+              'Module::CoreList::Utils'=> '5.20170621',
+              'PerlIO::scalar'        => '0.27',
+              'PerlIO::via'           => '0.17',
+              'Storable'              => '2.63',
+              'TAP::Base'             => '3.39',
+              'TAP::Formatter::Base'  => '3.39',
+              'TAP::Formatter::Color' => '3.39',
+              'TAP::Formatter::Console'=> '3.39',
+              'TAP::Formatter::Console::ParallelSession'=> '3.39',
+              'TAP::Formatter::Console::Session'=> '3.39',
+              'TAP::Formatter::File'  => '3.39',
+              'TAP::Formatter::File::Session'=> '3.39',
+              'TAP::Formatter::Session'=> '3.39',
+              'TAP::Harness'          => '3.39',
+              'TAP::Harness::Env'     => '3.39',
+              'TAP::Object'           => '3.39',
+              'TAP::Parser'           => '3.39',
+              'TAP::Parser::Aggregator'=> '3.39',
+              'TAP::Parser::Grammar'  => '3.39',
+              'TAP::Parser::Iterator' => '3.39',
+              'TAP::Parser::Iterator::Array'=> '3.39',
+              'TAP::Parser::Iterator::Process'=> '3.39',
+              'TAP::Parser::Iterator::Stream'=> '3.39',
+              'TAP::Parser::IteratorFactory'=> '3.39',
+              'TAP::Parser::Multiplexer'=> '3.39',
+              'TAP::Parser::Result'   => '3.39',
+              'TAP::Parser::Result::Bailout'=> '3.39',
+              'TAP::Parser::Result::Comment'=> '3.39',
+              'TAP::Parser::Result::Plan'=> '3.39',
+              'TAP::Parser::Result::Pragma'=> '3.39',
+              'TAP::Parser::Result::Test'=> '3.39',
+              'TAP::Parser::Result::Unknown'=> '3.39',
+              'TAP::Parser::Result::Version'=> '3.39',
+              'TAP::Parser::Result::YAML'=> '3.39',
+              'TAP::Parser::ResultFactory'=> '3.39',
+              'TAP::Parser::Scheduler'=> '3.39',
+              'TAP::Parser::Scheduler::Job'=> '3.39',
+              'TAP::Parser::Scheduler::Spinner'=> '3.39',
+              'TAP::Parser::Source'   => '3.39',
+              'TAP::Parser::SourceHandler'=> '3.39',
+              'TAP::Parser::SourceHandler::Executable'=> '3.39',
+              'TAP::Parser::SourceHandler::File'=> '3.39',
+              'TAP::Parser::SourceHandler::Handle'=> '3.39',
+              'TAP::Parser::SourceHandler::Perl'=> '3.39',
+              'TAP::Parser::SourceHandler::RawTAP'=> '3.39',
+              'TAP::Parser::YAMLish::Reader'=> '3.39',
+              'TAP::Parser::YAMLish::Writer'=> '3.39',
+              'Test::Harness'         => '3.39',
+              'XS::APItest'           => '0.89',
+              '_charnames'            => '1.45',
+              'charnames'             => '1.45',
+              'if'                    => '0.0607',
+              'mro'                   => '1.21',
+              'threads'               => '2.16',
+              'threads::shared'       => '1.57',
+              'version'               => '0.9918',
+              'version::regex'        => '0.9918',
+          },
+          removed => {
+          }
+      },
+      5.022004 => {
+          delta_from => 5.022003,
+          changed => {
+              'B::Op_private'         => '5.022004',
+              'Config'                => '5.022004',
+              'Module::CoreList'      => '5.20170715_22',
+              'Module::CoreList::TieHashDelta'=> '5.20170715_22',
+              'Module::CoreList::Utils'=> '5.20170715_22',
+              'base'                  => '2.22_01',
+          },
+          removed => {
+          }
+      },
+      5.024002 => {
+          delta_from => 5.024001,
+          changed => {
+              'B::Op_private'         => '5.024002',
+              'Config'                => '5.024002',
+              'Module::CoreList'      => '5.20170715_24',
+              'Module::CoreList::TieHashDelta'=> '5.20170715_24',
+              'Module::CoreList::Utils'=> '5.20170715_24',
+              'base'                  => '2.23_01',
+          },
+          removed => {
+          }
+      },
+      5.027002 => {
+          delta_from => 5.027001,
+          changed => {
+              'B::Op_private'         => '5.027002',
+              'Carp'                  => '1.43',
+              'Carp::Heavy'           => '1.43',
+              'Config'                => '5.027002',
+              'Cwd'                   => '3.68',
+              'Encode'                => '2.92',
+              'Encode::Alias'         => '2.23',
+              'Encode::CN::HZ'        => '2.09',
+              'Encode::Encoding'      => '2.08',
+              'Encode::GSM0338'       => '2.07',
+              'Encode::Guess'         => '2.07',
+              'Encode::JP::JIS7'      => '2.07',
+              'Encode::KR::2022_KR'   => '2.04',
+              'Encode::MIME::Header'  => '2.27',
+              'Encode::MIME::Header::ISO_2022_JP'=> '1.09',
+              'Encode::Unicode'       => '2.16',
+              'Encode::Unicode::UTF7' => '2.10',
+              'ExtUtils::CBuilder'    => '0.280228',
+              'ExtUtils::CBuilder::Base'=> '0.280228',
+              'ExtUtils::CBuilder::Platform::Unix'=> '0.280228',
+              'ExtUtils::CBuilder::Platform::VMS'=> '0.280228',
+              'ExtUtils::CBuilder::Platform::Windows'=> '0.280228',
+              'ExtUtils::CBuilder::Platform::Windows::BCC'=> '0.280228',
+              'ExtUtils::CBuilder::Platform::Windows::GCC'=> '0.280228',
+              'ExtUtils::CBuilder::Platform::Windows::MSVC'=> '0.280228',
+              'ExtUtils::CBuilder::Platform::aix'=> '0.280228',
+              'ExtUtils::CBuilder::Platform::android'=> '0.280228',
+              'ExtUtils::CBuilder::Platform::cygwin'=> '0.280228',
+              'ExtUtils::CBuilder::Platform::darwin'=> '0.280228',
+              'ExtUtils::CBuilder::Platform::dec_osf'=> '0.280228',
+              'ExtUtils::CBuilder::Platform::os2'=> '0.280228',
+              'File::Glob'            => '1.29',
+              'File::Spec'            => '3.68',
+              'File::Spec::AmigaOS'   => '3.68',
+              'File::Spec::Cygwin'    => '3.68',
+              'File::Spec::Epoc'      => '3.68',
+              'File::Spec::Functions' => '3.68',
+              'File::Spec::Mac'       => '3.68',
+              'File::Spec::OS2'       => '3.68',
+              'File::Spec::Unix'      => '3.68',
+              'File::Spec::VMS'       => '3.68',
+              'File::Spec::Win32'     => '3.68',
+              'List::Util'            => '1.48',
+              'List::Util::XS'        => '1.48',
+              'Math::BigRat'          => '0.2613',
+              'Module::CoreList'      => '5.20170720',
+              'Module::CoreList::TieHashDelta'=> '5.20170720',
+              'Module::CoreList::Utils'=> '5.20170720',
+              'Opcode'                => '1.40',
+              'POSIX'                 => '1.77',
+              'PerlIO::scalar'        => '0.29',
+              'Scalar::Util'          => '1.48',
+              'Sub::Util'             => '1.48',
+              'Time::HiRes'           => '1.9743',
+              'Time::Piece'           => '1.3201',
+              'Time::Seconds'         => '1.3201',
+              'Unicode'               => '10.0.0',
+              'XS::APItest'           => '0.90',
+              'arybase'               => '0.13',
+              'encoding'              => '2.20',
+              'feature'               => '1.49',
+              're'                    => '0.35',
+          },
+          removed => {
+          }
+      },
+      5.027003 => {
+          delta_from => 5.027002,
+          changed => {
+              'B'                     => '1.69',
+              'B::Concise'            => '1.001',
+              'B::Debug'              => '1.25',
+              'B::Deparse'            => '1.42',
+              'B::Op_private'         => '5.027003',
+              'Config'                => '5.027003',
+              'Data::Dumper'          => '2.167_02',
+              'Devel::Peek'           => '1.27',
+              'ExtUtils::Constant'    => '0.24',
+              'ExtUtils::Constant::Base'=> '0.06',
+              'ExtUtils::Constant::ProxySubs'=> '0.09',
+              'ExtUtils::Constant::Utils'=> '0.04',
+              'ExtUtils::ParseXS'     => '3.35',
+              'ExtUtils::ParseXS::Constants'=> '3.35',
+              'ExtUtils::ParseXS::CountLines'=> '3.35',
+              'ExtUtils::ParseXS::Eval'=> '3.35',
+              'ExtUtils::ParseXS::Utilities'=> '3.35',
+              'ExtUtils::Typemaps'    => '3.35',
+              'ExtUtils::Typemaps::Cmd'=> '3.35',
+              'ExtUtils::Typemaps::InputMap'=> '3.35',
+              'ExtUtils::Typemaps::OutputMap'=> '3.35',
+              'ExtUtils::Typemaps::Type'=> '3.35',
+              'Filter::Simple'        => '0.94',
+              'Module::CoreList'      => '5.20170821',
+              'Module::CoreList::TieHashDelta'=> '5.20170821',
+              'Module::CoreList::Utils'=> '5.20170821',
+              'SelfLoader'            => '1.24',
+              'Storable'              => '2.64',
+              'XS::APItest'           => '0.91',
+              'base'                  => '2.26',
+              'threads'               => '2.17',
+              'utf8'                  => '1.20',
+          },
+          removed => {
+          }
+      },
+      5.027004 => {
+          delta_from => 5.027003,
+          changed => {
+              'B::Op_private'         => '5.027004',
+              'Config'                => '5.027004',
+              'File::Glob'            => '1.30',
+              'I18N::Langinfo'        => '0.14',
+              'Module::CoreList'      => '5.20170920',
+              'Module::CoreList::TieHashDelta'=> '5.20170920',
+              'Module::CoreList::Utils'=> '5.20170920',
+              'Term::ReadLine'        => '1.17',
+              'VMS::Stdio'            => '2.42',
+              'XS::APItest'           => '0.92',
+              'attributes'            => '0.31',
+              'sort'                  => '2.03',
+              'threads'               => '2.18',
+          },
+          removed => {
+          }
+      },
+      5.024003 => {
+          delta_from => 5.024002,
+          changed => {
+              'B::Op_private'         => '5.024003',
+              'Config'                => '5.024003',
+              'Module::CoreList'      => '5.20170922_24',
+              'Module::CoreList::TieHashDelta'=> '5.20170922_24',
+              'Module::CoreList::Utils'=> '5.20170922_24',
+              'POSIX'                 => '1.65_01',
+              'Time::HiRes'           => '1.9741',
+          },
+          removed => {
+          }
+      },
+      5.026001 => {
+          delta_from => 5.026000,
+          changed => {
+              'B::Op_private'         => '5.026001',
+              'Config'                => '5.026001',
+              'Module::CoreList'      => '5.20170922_26',
+              'Module::CoreList::TieHashDelta'=> '5.20170922_26',
+              'Module::CoreList::Utils'=> '5.20170922_26',
+              '_charnames'            => '1.45',
+              'base'                  => '2.26',
+              'charnames'             => '1.45',
+          },
+          removed => {
+          }
+      },
+      5.027005 => {
+          delta_from => 5.027004,
+          changed => {
+              'B'                     => '1.70',
+              'B::Concise'            => '1.002',
+              'B::Deparse'            => '1.43',
+              'B::Op_private'         => '5.027005',
+              'B::Xref'               => '1.07',
+              'Config'                => '5.027005',
+              'Config::Perl::V'       => '0.29',
+              'Digest::SHA'           => '5.98',
+              'Encode'                => '2.93',
+              'Encode::CN::HZ'        => '2.10',
+              'Encode::JP::JIS7'      => '2.08',
+              'Encode::MIME::Header'  => '2.28',
+              'Encode::MIME::Name'    => '1.03',
+              'File::Fetch'           => '0.54',
+              'File::Path'            => '2.15',
+              'List::Util'            => '1.49',
+              'List::Util::XS'        => '1.49',
+              'Locale::Codes'         => '3.54',
+              'Locale::Codes::Constants'=> '3.54',
+              'Locale::Codes::Country'=> '3.54',
+              'Locale::Codes::Country_Codes'=> '3.54',
+              'Locale::Codes::Country_Retired'=> '3.54',
+              'Locale::Codes::Currency'=> '3.54',
+              'Locale::Codes::Currency_Codes'=> '3.54',
+              'Locale::Codes::Currency_Retired'=> '3.54',
+              'Locale::Codes::LangExt'=> '3.54',
+              'Locale::Codes::LangExt_Codes'=> '3.54',
+              'Locale::Codes::LangExt_Retired'=> '3.54',
+              'Locale::Codes::LangFam'=> '3.54',
+              'Locale::Codes::LangFam_Codes'=> '3.54',
+              'Locale::Codes::LangFam_Retired'=> '3.54',
+              'Locale::Codes::LangVar'=> '3.54',
+              'Locale::Codes::LangVar_Codes'=> '3.54',
+              'Locale::Codes::LangVar_Retired'=> '3.54',
+              'Locale::Codes::Language'=> '3.54',
+              'Locale::Codes::Language_Codes'=> '3.54',
+              'Locale::Codes::Language_Retired'=> '3.54',
+              'Locale::Codes::Script' => '3.54',
+              'Locale::Codes::Script_Codes'=> '3.54',
+              'Locale::Codes::Script_Retired'=> '3.54',
+              'Locale::Country'       => '3.54',
+              'Locale::Currency'      => '3.54',
+              'Locale::Language'      => '3.54',
+              'Locale::Script'        => '3.54',
+              'Math::BigFloat'        => '1.999811',
+              'Math::BigInt'          => '1.999811',
+              'Math::BigInt::Calc'    => '1.999811',
+              'Math::BigInt::CalcEmu' => '1.999811',
+              'Math::BigInt::FastCalc'=> '0.5006',
+              'Math::BigInt::Lib'     => '1.999811',
+              'Module::CoreList'      => '5.20171020',
+              'Module::CoreList::TieHashDelta'=> '5.20171020',
+              'Module::CoreList::Utils'=> '5.20171020',
+              'NEXT'                  => '0.67_01',
+              'POSIX'                 => '1.78',
+              'Pod::Perldoc'          => '3.2801',
+              'Scalar::Util'          => '1.49',
+              'Sub::Util'             => '1.49',
+              'Sys::Hostname'         => '1.21',
+              'Test2'                 => '1.302103',
+              'Test2::API'            => '1.302103',
+              'Test2::API::Breakage'  => '1.302103',
+              'Test2::API::Context'   => '1.302103',
+              'Test2::API::Instance'  => '1.302103',
+              'Test2::API::Stack'     => '1.302103',
+              'Test2::Event'          => '1.302103',
+              'Test2::Event::Bail'    => '1.302103',
+              'Test2::Event::Diag'    => '1.302103',
+              'Test2::Event::Encoding'=> '1.302103',
+              'Test2::Event::Exception'=> '1.302103',
+              'Test2::Event::Fail'    => '1.302103',
+              'Test2::Event::Generic' => '1.302103',
+              'Test2::Event::Note'    => '1.302103',
+              'Test2::Event::Ok'      => '1.302103',
+              'Test2::Event::Pass'    => '1.302103',
+              'Test2::Event::Plan'    => '1.302103',
+              'Test2::Event::Skip'    => '1.302103',
+              'Test2::Event::Subtest' => '1.302103',
+              'Test2::Event::TAP::Version'=> '1.302103',
+              'Test2::Event::Waiting' => '1.302103',
+              'Test2::EventFacet'     => '1.302103',
+              'Test2::EventFacet::About'=> '1.302103',
+              'Test2::EventFacet::Amnesty'=> '1.302103',
+              'Test2::EventFacet::Assert'=> '1.302103',
+              'Test2::EventFacet::Control'=> '1.302103',
+              'Test2::EventFacet::Error'=> '1.302103',
+              'Test2::EventFacet::Info'=> '1.302103',
+              'Test2::EventFacet::Meta'=> '1.302103',
+              'Test2::EventFacet::Parent'=> '1.302103',
+              'Test2::EventFacet::Plan'=> '1.302103',
+              'Test2::EventFacet::Trace'=> '1.302103',
+              'Test2::Formatter'      => '1.302103',
+              'Test2::Formatter::TAP' => '1.302103',
+              'Test2::Hub'            => '1.302103',
+              'Test2::Hub::Interceptor'=> '1.302103',
+              'Test2::Hub::Interceptor::Terminator'=> '1.302103',
+              'Test2::Hub::Subtest'   => '1.302103',
+              'Test2::IPC'            => '1.302103',
+              'Test2::IPC::Driver'    => '1.302103',
+              'Test2::IPC::Driver::Files'=> '1.302103',
+              'Test2::Tools::Tiny'    => '1.302103',
+              'Test2::Util'           => '1.302103',
+              'Test2::Util::ExternalMeta'=> '1.302103',
+              'Test2::Util::Facets2Legacy'=> '1.302103',
+              'Test2::Util::HashBase' => '0.005',
+              'Test2::Util::Trace'    => '1.302103',
+              'Test::Builder'         => '1.302103',
+              'Test::Builder::Formatter'=> '1.302103',
+              'Test::Builder::IO::Scalar'=> '2.114',
+              'Test::Builder::Module' => '1.302103',
+              'Test::Builder::Tester' => '1.302103',
+              'Test::Builder::Tester::Color'=> '1.302103',
+              'Test::Builder::TodoDiag'=> '1.302103',
+              'Test::More'            => '1.302103',
+              'Test::Simple'          => '1.302103',
+              'Test::Tester'          => '1.302103',
+              'Test::Tester::Capture' => '1.302103',
+              'Test::Tester::CaptureRunner'=> '1.302103',
+              'Test::Tester::Delegate'=> '1.302103',
+              'Test::use::ok'         => '1.302103',
+              'Time::HiRes'           => '1.9746',
+              'Time::Piece'           => '1.3202',
+              'Time::Seconds'         => '1.3202',
+              'arybase'               => '0.14',
+              'encoding'              => '2.21',
+              'ok'                    => '1.302103',
+          },
+          removed => {
+              'Test2::Event::Info'    => 1,
+          }
+      },
+      5.027006 => {
+          delta_from => 5.027005,
+          changed => {
+              'Attribute::Handlers'   => '1.01',
+              'B'                     => '1.72',
+              'B::Concise'            => '1.003',
+              'B::Deparse'            => '1.45',
+              'B::Op_private'         => '5.027006',
+              'Carp'                  => '1.44',
+              'Carp::Heavy'           => '1.44',
+              'Compress::Raw::Zlib'   => '2.075',
+              'Config'                => '5.027006',
+              'Config::Extensions'    => '0.02',
+              'Cwd'                   => '3.70',
+              'DynaLoader'            => '1.44',
+              'ExtUtils::CBuilder'    => '0.280229',
+              'ExtUtils::CBuilder::Platform::Unix'=> '0.280229',
+              'ExtUtils::CBuilder::Platform::VMS'=> '0.280229',
+              'ExtUtils::CBuilder::Platform::Windows'=> '0.280229',
+              'ExtUtils::CBuilder::Platform::aix'=> '0.280229',
+              'ExtUtils::CBuilder::Platform::android'=> '0.280229',
+              'ExtUtils::CBuilder::Platform::cygwin'=> '0.280229',
+              'ExtUtils::CBuilder::Platform::darwin'=> '0.280229',
+              'ExtUtils::CBuilder::Platform::dec_osf'=> '0.280229',
+              'ExtUtils::CBuilder::Platform::os2'=> '0.280229',
+              'ExtUtils::Embed'       => '1.35',
+              'ExtUtils::Miniperl'    => '1.07',
+              'ExtUtils::ParseXS'     => '3.36',
+              'ExtUtils::ParseXS::Constants'=> '3.36',
+              'ExtUtils::ParseXS::CountLines'=> '3.36',
+              'ExtUtils::ParseXS::Eval'=> '3.36',
+              'ExtUtils::ParseXS::Utilities'=> '3.36',
+              'ExtUtils::Typemaps'    => '3.36',
+              'ExtUtils::Typemaps::Cmd'=> '3.36',
+              'ExtUtils::Typemaps::InputMap'=> '3.36',
+              'ExtUtils::Typemaps::OutputMap'=> '3.36',
+              'ExtUtils::Typemaps::Type'=> '3.36',
+              'ExtUtils::XSSymSet'    => '1.4',
+              'File::Copy'            => '2.33',
+              'File::Spec'            => '3.69',
+              'File::Spec::AmigaOS'   => '3.69',
+              'File::Spec::Cygwin'    => '3.69',
+              'File::Spec::Epoc'      => '3.69',
+              'File::Spec::Functions' => '3.69',
+              'File::Spec::Mac'       => '3.69',
+              'File::Spec::OS2'       => '3.69',
+              'File::Spec::Unix'      => '3.69',
+              'File::Spec::VMS'       => '3.69',
+              'File::Spec::Win32'     => '3.69',
+              'File::stat'            => '1.08',
+              'FileCache'             => '1.10',
+              'Filter::Simple'        => '0.95',
+              'Hash::Util::FieldHash' => '1.20',
+              'I18N::LangTags'        => '0.43',
+              'I18N::LangTags::Detect'=> '1.07',
+              'I18N::LangTags::List'  => '0.40',
+              'I18N::Langinfo'        => '0.15',
+              'IO::Handle'            => '1.37',
+              'IO::Select'            => '1.23',
+              'Locale::Maketext'      => '1.29',
+              'Module::CoreList'      => '5.20171120',
+              'Module::CoreList::TieHashDelta'=> '5.20171120',
+              'Module::CoreList::Utils'=> '5.20171120',
+              'Net::Cmd'              => '3.11',
+              'Net::Config'           => '3.11',
+              'Net::Domain'           => '3.11',
+              'Net::FTP'              => '3.11',
+              'Net::FTP::A'           => '3.11',
+              'Net::FTP::E'           => '3.11',
+              'Net::FTP::I'           => '3.11',
+              'Net::FTP::L'           => '3.11',
+              'Net::FTP::dataconn'    => '3.11',
+              'Net::NNTP'             => '3.11',
+              'Net::Netrc'            => '3.11',
+              'Net::POP3'             => '3.11',
+              'Net::Ping'             => '2.62',
+              'Net::SMTP'             => '3.11',
+              'Net::Time'             => '3.11',
+              'Net::hostent'          => '1.02',
+              'Net::netent'           => '1.01',
+              'Net::protoent'         => '1.01',
+              'Net::servent'          => '1.02',
+              'O'                     => '1.03',
+              'ODBM_File'             => '1.15',
+              'Opcode'                => '1.41',
+              'POSIX'                 => '1.80',
+              'Pod::Html'             => '1.2203',
+              'SelfLoader'            => '1.25',
+              'Socket'                => '2.020_04',
+              'Storable'              => '2.65',
+              'Storable::__Storable__'=> '2.65',
+              'Test'                  => '1.31',
+              'Test2'                 => '1.302111',
+              'Test2::API'            => '1.302111',
+              'Test2::API::Breakage'  => '1.302111',
+              'Test2::API::Context'   => '1.302111',
+              'Test2::API::Instance'  => '1.302111',
+              'Test2::API::Stack'     => '1.302111',
+              'Test2::Event'          => '1.302111',
+              'Test2::Event::Bail'    => '1.302111',
+              'Test2::Event::Diag'    => '1.302111',
+              'Test2::Event::Encoding'=> '1.302111',
+              'Test2::Event::Exception'=> '1.302111',
+              'Test2::Event::Fail'    => '1.302111',
+              'Test2::Event::Generic' => '1.302111',
+              'Test2::Event::Note'    => '1.302111',
+              'Test2::Event::Ok'      => '1.302111',
+              'Test2::Event::Pass'    => '1.302111',
+              'Test2::Event::Plan'    => '1.302111',
+              'Test2::Event::Skip'    => '1.302111',
+              'Test2::Event::Subtest' => '1.302111',
+              'Test2::Event::TAP::Version'=> '1.302111',
+              'Test2::Event::Waiting' => '1.302111',
+              'Test2::EventFacet'     => '1.302111',
+              'Test2::EventFacet::About'=> '1.302111',
+              'Test2::EventFacet::Amnesty'=> '1.302111',
+              'Test2::EventFacet::Assert'=> '1.302111',
+              'Test2::EventFacet::Control'=> '1.302111',
+              'Test2::EventFacet::Error'=> '1.302111',
+              'Test2::EventFacet::Info'=> '1.302111',
+              'Test2::EventFacet::Meta'=> '1.302111',
+              'Test2::EventFacet::Parent'=> '1.302111',
+              'Test2::EventFacet::Plan'=> '1.302111',
+              'Test2::EventFacet::Trace'=> '1.302111',
+              'Test2::Formatter'      => '1.302111',
+              'Test2::Formatter::TAP' => '1.302111',
+              'Test2::Hub'            => '1.302111',
+              'Test2::Hub::Interceptor'=> '1.302111',
+              'Test2::Hub::Interceptor::Terminator'=> '1.302111',
+              'Test2::Hub::Subtest'   => '1.302111',
+              'Test2::IPC'            => '1.302111',
+              'Test2::IPC::Driver'    => '1.302111',
+              'Test2::IPC::Driver::Files'=> '1.302111',
+              'Test2::Tools::Tiny'    => '1.302111',
+              'Test2::Util'           => '1.302111',
+              'Test2::Util::ExternalMeta'=> '1.302111',
+              'Test2::Util::Facets2Legacy'=> '1.302111',
+              'Test2::Util::HashBase' => '1.302111',
+              'Test2::Util::Trace'    => '1.302111',
+              'Test::Builder'         => '1.302111',
+              'Test::Builder::Formatter'=> '1.302111',
+              'Test::Builder::Module' => '1.302111',
+              'Test::Builder::Tester' => '1.302111',
+              'Test::Builder::Tester::Color'=> '1.302111',
+              'Test::Builder::TodoDiag'=> '1.302111',
+              'Test::More'            => '1.302111',
+              'Test::Simple'          => '1.302111',
+              'Test::Tester'          => '1.302111',
+              'Test::Tester::Capture' => '1.302111',
+              'Test::Tester::CaptureRunner'=> '1.302111',
+              'Test::Tester::Delegate'=> '1.302111',
+              'Test::use::ok'         => '1.302111',
+              'Tie::Array'            => '1.07',
+              'Tie::StdHandle'        => '4.5',
+              'Time::HiRes'           => '1.9747',
+              'Time::gmtime'          => '1.04',
+              'Time::localtime'       => '1.03',
+              'Unicode::Collate'      => '1.23',
+              'Unicode::Collate::CJK::Big5'=> '1.23',
+              'Unicode::Collate::CJK::GB2312'=> '1.23',
+              'Unicode::Collate::CJK::JISX0208'=> '1.23',
+              'Unicode::Collate::CJK::Korean'=> '1.23',
+              'Unicode::Collate::CJK::Pinyin'=> '1.23',
+              'Unicode::Collate::CJK::Stroke'=> '1.23',
+              'Unicode::Collate::CJK::Zhuyin'=> '1.23',
+              'Unicode::Collate::Locale'=> '1.23',
+              'Unicode::Normalize'    => '1.26',
+              'User::grent'           => '1.02',
+              'User::pwent'           => '1.01',
+              'VMS::DCLsym'           => '1.09',
+              'VMS::Stdio'            => '2.44',
+              'XS::APItest'           => '0.93',
+              'XS::Typemap'           => '0.16',
+              'XSLoader'              => '0.28',
+              'attributes'            => '0.32',
+              'base'                  => '2.27',
+              'blib'                  => '1.07',
+              'experimental'          => '0.017',
+              'fields'                => '2.24',
+              'ok'                    => '1.302111',
+              're'                    => '0.36',
+              'sort'                  => '2.04',
+              'threads'               => '2.19',
+              'warnings'              => '1.38',
+          },
+          removed => {
+          }
+      },
+      5.027007 => {
+          delta_from => 5.027006,
+          changed => {
+              'App::Cpan'             => '1.67',
+              'B'                     => '1.73',
+              'B::Debug'              => '1.26',
+              'B::Deparse'            => '1.46',
+              'B::Op_private'         => '5.027007',
+              'CPAN'                  => '2.20',
+              'CPAN::Distribution'    => '2.19',
+              'CPAN::FTP'             => '5.5011',
+              'CPAN::FirstTime'       => '5.5311',
+              'CPAN::Shell'           => '5.5007',
+              'Carp'                  => '1.45',
+              'Carp::Heavy'           => '1.45',
+              'Compress::Raw::Zlib'   => '2.076',
+              'Config'                => '5.027007',
+              'Cwd'                   => '3.71',
+              'Data::Dumper'          => '2.169',
+              'Devel::PPPort'         => '3.37',
+              'Digest::SHA'           => '6.00',
+              'DynaLoader'            => '1.45',
+              'ExtUtils::CBuilder'    => '0.280230',
+              'ExtUtils::CBuilder::Base'=> '0.280230',
+              'ExtUtils::CBuilder::Platform::Unix'=> '0.280230',
+              'ExtUtils::CBuilder::Platform::VMS'=> '0.280230',
+              'ExtUtils::CBuilder::Platform::Windows'=> '0.280230',
+              'ExtUtils::CBuilder::Platform::Windows::BCC'=> '0.280230',
+              'ExtUtils::CBuilder::Platform::Windows::GCC'=> '0.280230',
+              'ExtUtils::CBuilder::Platform::Windows::MSVC'=> '0.280230',
+              'ExtUtils::CBuilder::Platform::aix'=> '0.280230',
+              'ExtUtils::CBuilder::Platform::android'=> '0.280230',
+              'ExtUtils::CBuilder::Platform::cygwin'=> '0.280230',
+              'ExtUtils::CBuilder::Platform::darwin'=> '0.280230',
+              'ExtUtils::CBuilder::Platform::dec_osf'=> '0.280230',
+              'ExtUtils::CBuilder::Platform::os2'=> '0.280230',
+              'ExtUtils::Typemaps'    => '3.37',
+              'File::Fetch'           => '0.56',
+              'File::Spec'            => '3.71',
+              'File::Spec::AmigaOS'   => '3.71',
+              'File::Spec::Cygwin'    => '3.71',
+              'File::Spec::Epoc'      => '3.71',
+              'File::Spec::Functions' => '3.71',
+              'File::Spec::Mac'       => '3.71',
+              'File::Spec::OS2'       => '3.71',
+              'File::Spec::Unix'      => '3.71',
+              'File::Spec::VMS'       => '3.71',
+              'File::Spec::Win32'     => '3.71',
+              'Filter::Util::Call'    => '1.58',
+              'GDBM_File'             => '1.17',
+              'JSON::PP'              => '2.97000',
+              'JSON::PP::Boolean'     => '2.97000',
+              'Locale::Codes'         => '3.55',
+              'Locale::Codes::Constants'=> '3.55',
+              'Locale::Codes::Country'=> '3.55',
+              'Locale::Codes::Country_Codes'=> '3.55',
+              'Locale::Codes::Country_Retired'=> '3.55',
+              'Locale::Codes::Currency'=> '3.55',
+              'Locale::Codes::Currency_Codes'=> '3.55',
+              'Locale::Codes::Currency_Retired'=> '3.55',
+              'Locale::Codes::LangExt'=> '3.55',
+              'Locale::Codes::LangExt_Codes'=> '3.55',
+              'Locale::Codes::LangExt_Retired'=> '3.55',
+              'Locale::Codes::LangFam'=> '3.55',
+              'Locale::Codes::LangFam_Codes'=> '3.55',
+              'Locale::Codes::LangFam_Retired'=> '3.55',
+              'Locale::Codes::LangVar'=> '3.55',
+              'Locale::Codes::LangVar_Codes'=> '3.55',
+              'Locale::Codes::LangVar_Retired'=> '3.55',
+              'Locale::Codes::Language'=> '3.55',
+              'Locale::Codes::Language_Codes'=> '3.55',
+              'Locale::Codes::Language_Retired'=> '3.55',
+              'Locale::Codes::Script' => '3.55',
+              'Locale::Codes::Script_Codes'=> '3.55',
+              'Locale::Codes::Script_Retired'=> '3.55',
+              'Locale::Country'       => '3.55',
+              'Locale::Currency'      => '3.55',
+              'Locale::Language'      => '3.55',
+              'Locale::Script'        => '3.55',
+              'Module::CoreList'      => '5.20171220',
+              'Module::CoreList::TieHashDelta'=> '5.20171220',
+              'Module::CoreList::Utils'=> '5.20171220',
+              'Opcode'                => '1.42',
+              'POSIX'                 => '1.81',
+              'Pod::Functions'        => '1.12',
+              'Pod::Functions::Functions'=> '1.12',
+              'Pod::Html'             => '1.23',
+              'Sys::Hostname'         => '1.22',
+              'Test2'                 => '1.302120',
+              'Test2::API'            => '1.302120',
+              'Test2::API::Breakage'  => '1.302120',
+              'Test2::API::Context'   => '1.302120',
+              'Test2::API::Instance'  => '1.302120',
+              'Test2::API::Stack'     => '1.302120',
+              'Test2::Event'          => '1.302120',
+              'Test2::Event::Bail'    => '1.302120',
+              'Test2::Event::Diag'    => '1.302120',
+              'Test2::Event::Encoding'=> '1.302120',
+              'Test2::Event::Exception'=> '1.302120',
+              'Test2::Event::Fail'    => '1.302120',
+              'Test2::Event::Generic' => '1.302120',
+              'Test2::Event::Note'    => '1.302120',
+              'Test2::Event::Ok'      => '1.302120',
+              'Test2::Event::Pass'    => '1.302120',
+              'Test2::Event::Plan'    => '1.302120',
+              'Test2::Event::Skip'    => '1.302120',
+              'Test2::Event::Subtest' => '1.302120',
+              'Test2::Event::TAP::Version'=> '1.302120',
+              'Test2::Event::Waiting' => '1.302120',
+              'Test2::EventFacet'     => '1.302120',
+              'Test2::EventFacet::About'=> '1.302120',
+              'Test2::EventFacet::Amnesty'=> '1.302120',
+              'Test2::EventFacet::Assert'=> '1.302120',
+              'Test2::EventFacet::Control'=> '1.302120',
+              'Test2::EventFacet::Error'=> '1.302120',
+              'Test2::EventFacet::Info'=> '1.302120',
+              'Test2::EventFacet::Meta'=> '1.302120',
+              'Test2::EventFacet::Parent'=> '1.302120',
+              'Test2::EventFacet::Plan'=> '1.302120',
+              'Test2::EventFacet::Trace'=> '1.302120',
+              'Test2::Formatter'      => '1.302120',
+              'Test2::Formatter::TAP' => '1.302120',
+              'Test2::Hub'            => '1.302120',
+              'Test2::Hub::Interceptor'=> '1.302120',
+              'Test2::Hub::Interceptor::Terminator'=> '1.302120',
+              'Test2::Hub::Subtest'   => '1.302120',
+              'Test2::IPC'            => '1.302120',
+              'Test2::IPC::Driver'    => '1.302120',
+              'Test2::IPC::Driver::Files'=> '1.302120',
+              'Test2::Tools::Tiny'    => '1.302120',
+              'Test2::Util'           => '1.302120',
+              'Test2::Util::ExternalMeta'=> '1.302120',
+              'Test2::Util::Facets2Legacy'=> '1.302120',
+              'Test2::Util::HashBase' => '1.302120',
+              'Test2::Util::Trace'    => '1.302120',
+              'Test::Builder'         => '1.302120',
+              'Test::Builder::Formatter'=> '1.302120',
+              'Test::Builder::Module' => '1.302120',
+              'Test::Builder::Tester' => '1.302120',
+              'Test::Builder::Tester::Color'=> '1.302120',
+              'Test::Builder::TodoDiag'=> '1.302120',
+              'Test::More'            => '1.302120',
+              'Test::Simple'          => '1.302120',
+              'Test::Tester'          => '1.302120',
+              'Test::Tester::Capture' => '1.302120',
+              'Test::Tester::CaptureRunner'=> '1.302120',
+              'Test::Tester::Delegate'=> '1.302120',
+              'Test::use::ok'         => '1.302120',
+              'Time::HiRes'           => '1.9748',
+              'Time::Piece'           => '1.3203',
+              'Time::Seconds'         => '1.3203',
+              'Unicode::Collate'      => '1.25',
+              'Unicode::Collate::CJK::Big5'=> '1.25',
+              'Unicode::Collate::CJK::GB2312'=> '1.25',
+              'Unicode::Collate::CJK::JISX0208'=> '1.25',
+              'Unicode::Collate::CJK::Korean'=> '1.25',
+              'Unicode::Collate::CJK::Pinyin'=> '1.25',
+              'Unicode::Collate::CJK::Stroke'=> '1.25',
+              'Unicode::Collate::CJK::Zhuyin'=> '1.25',
+              'Unicode::Collate::Locale'=> '1.25',
+              'Unicode::UCD'          => '0.69',
+              'XS::APItest'           => '0.94',
+              'XSLoader'              => '0.29',
+              'arybase'               => '0.15',
+              'autodie::exception'    => '2.29001',
+              'autodie::hints'        => '2.29001',
+              'experimental'          => '0.019',
+              'feature'               => '1.50',
+              'ok'                    => '1.302120',
+              'overload'              => '1.29',
+              'threads'               => '2.21',
+              'threads::shared'       => '1.58',
+              'warnings'              => '1.39',
+          },
+          removed => {
+          }
+      },
+      5.027008 => {
+          delta_from => 5.027007,
+          changed => {
+              'B'                     => '1.74',
+              'B::Deparse'            => '1.47',
+              'B::Op_private'         => '5.027008',
+              'Config'                => '5.027008',
+              'Cwd'                   => '3.72',
+              'Data::Dumper'          => '2.170',
+              'Devel::PPPort'         => '3.38',
+              'Digest::SHA'           => '6.01',
+              'Encode'                => '2.94',
+              'Encode::Alias'         => '2.24',
+              'ExtUtils::Miniperl'    => '1.08',
+              'File::Spec'            => '3.72',
+              'File::Spec::AmigaOS'   => '3.72',
+              'File::Spec::Cygwin'    => '3.72',
+              'File::Spec::Epoc'      => '3.72',
+              'File::Spec::Functions' => '3.72',
+              'File::Spec::Mac'       => '3.72',
+              'File::Spec::OS2'       => '3.72',
+              'File::Spec::Unix'      => '3.72',
+              'File::Spec::VMS'       => '3.72',
+              'File::Spec::Win32'     => '3.72',
+              'JSON::PP'              => '2.97001',
+              'JSON::PP::Boolean'     => '2.97001',
+              'Module::CoreList'      => '5.20180120',
+              'Module::CoreList::TieHashDelta'=> '5.20180120',
+              'Module::CoreList::Utils'=> '5.20180120',
+              'Opcode'                => '1.43',
+              'Pod::Functions'        => '1.13',
+              'Pod::Functions::Functions'=> '1.13',
+              'Pod::Html'             => '1.24',
+              'Pod::Man'              => '4.10',
+              'Pod::ParseLink'        => '4.10',
+              'Pod::Text'             => '4.10',
+              'Pod::Text::Color'      => '4.10',
+              'Pod::Text::Overstrike' => '4.10',
+              'Pod::Text::Termcap'    => '4.10',
+              'Socket'                => '2.027',
+              'Time::HiRes'           => '1.9752',
+              'Unicode::UCD'          => '0.70',
+              'XS::APItest'           => '0.95',
+              'XSLoader'              => '0.30',
+              'autodie::exception'    => '2.29002',
+              'feature'               => '1.51',
+              'overload'              => '1.30',
+              'utf8'                  => '1.21',
+              'warnings'              => '1.40',
+          },
+          removed => {
+          }
+      },
   );
   
   sub is_core
   {
+      shift if defined $_[1] and $_[1] =~ /^\w/ and _looks_like_invocant $_[0];
       my $module = shift;
-      $module = shift if eval { $module->isa(__PACKAGE__) } && @_ > 0 && defined($_[0]) && $_[0] =~ /^\w/;
-      my ($module_version, $perl_version);
-  
-      $module_version = shift if @_ > 0;
-      $perl_version   = @_ > 0 ? shift : $];
+      my $module_version = @_ > 0 ? shift : undef;
+      my $perl_version   = @_ > 0 ? shift : $];
   
       my $first_release = first_release($module);
   
@@ -25484,6 +31300,98 @@ $fatpacked{"Module/CoreList.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
           removed => {
           }
       },
+      5.027000 => {
+          delta_from => 5.026,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.027001 => {
+          delta_from => 5.027,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.022004 => {
+          delta_from => 5.022003,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.024002 => {
+          delta_from => 5.024001,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.027002 => {
+          delta_from => 5.027001,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.027003 => {
+          delta_from => 5.027002,
+          changed => {
+              'B::Debug'              => '1',
+          },
+          removed => {
+          }
+      },
+      5.027004 => {
+          delta_from => 5.027003,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.024003 => {
+          delta_from => 5.024002,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.026001 => {
+          delta_from => 5.026000,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.027005 => {
+          delta_from => 5.027004,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.027006 => {
+          delta_from => 5.027005,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.027007 => {
+          delta_from => 5.027006,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.027008 => {
+          delta_from => 5.027007,
+          changed => {
+          },
+          removed => {
+          }
+      },
   );
   
   %deprecated = _undelta(\%deprecated);
@@ -25550,7 +31458,6 @@ $fatpacked{"Module/CoreList.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
       'Compress::Zlib'        => 'cpan',
       'Config::Perl::V'       => 'cpan',
       'DB_File'               => 'cpan',
-      'Devel::PPPort'         => 'cpan',
       'Digest'                => 'cpan',
       'Digest::MD5'           => 'cpan',
       'Digest::SHA'           => 'cpan',
@@ -25852,15 +31759,27 @@ $fatpacked{"Module/CoreList.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
       'Test2::Event::Diag'    => 'cpan',
       'Test2::Event::Encoding'=> 'cpan',
       'Test2::Event::Exception'=> 'cpan',
+      'Test2::Event::Fail'    => 'cpan',
       'Test2::Event::Generic' => 'cpan',
-      'Test2::Event::Info'    => 'cpan',
       'Test2::Event::Note'    => 'cpan',
       'Test2::Event::Ok'      => 'cpan',
+      'Test2::Event::Pass'    => 'cpan',
       'Test2::Event::Plan'    => 'cpan',
       'Test2::Event::Skip'    => 'cpan',
       'Test2::Event::Subtest' => 'cpan',
       'Test2::Event::TAP::Version'=> 'cpan',
       'Test2::Event::Waiting' => 'cpan',
+      'Test2::EventFacet'     => 'cpan',
+      'Test2::EventFacet::About'=> 'cpan',
+      'Test2::EventFacet::Amnesty'=> 'cpan',
+      'Test2::EventFacet::Assert'=> 'cpan',
+      'Test2::EventFacet::Control'=> 'cpan',
+      'Test2::EventFacet::Error'=> 'cpan',
+      'Test2::EventFacet::Info'=> 'cpan',
+      'Test2::EventFacet::Meta'=> 'cpan',
+      'Test2::EventFacet::Parent'=> 'cpan',
+      'Test2::EventFacet::Plan'=> 'cpan',
+      'Test2::EventFacet::Trace'=> 'cpan',
       'Test2::Formatter'      => 'cpan',
       'Test2::Formatter::TAP' => 'cpan',
       'Test2::Hub'            => 'cpan',
@@ -25873,6 +31792,7 @@ $fatpacked{"Module/CoreList.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
       'Test2::Tools::Tiny'    => 'cpan',
       'Test2::Util'           => 'cpan',
       'Test2::Util::ExternalMeta'=> 'cpan',
+      'Test2::Util::Facets2Legacy'=> 'cpan',
       'Test2::Util::HashBase' => 'cpan',
       'Test2::Util::Trace'    => 'cpan',
       'Test::Builder'         => 'cpan',
@@ -25990,7 +31910,6 @@ $fatpacked{"Module/CoreList.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
       'Compress::Zlib'        => undef,
       'Config::Perl::V'       => undef,
       'DB_File'               => undef,
-      'Devel::PPPort'         => 'https://github.com/mhx/Devel-PPPort/issues/',
       'Digest'                => undef,
       'Digest::MD5'           => undef,
       'Digest::SHA'           => undef,
@@ -26292,15 +32211,27 @@ $fatpacked{"Module/CoreList.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
       'Test2::Event::Diag'    => 'http://github.com/Test-More/test-more/issues',
       'Test2::Event::Encoding'=> 'http://github.com/Test-More/test-more/issues',
       'Test2::Event::Exception'=> 'http://github.com/Test-More/test-more/issues',
+      'Test2::Event::Fail'    => 'http://github.com/Test-More/test-more/issues',
       'Test2::Event::Generic' => 'http://github.com/Test-More/test-more/issues',
-      'Test2::Event::Info'    => 'http://github.com/Test-More/test-more/issues',
       'Test2::Event::Note'    => 'http://github.com/Test-More/test-more/issues',
       'Test2::Event::Ok'      => 'http://github.com/Test-More/test-more/issues',
+      'Test2::Event::Pass'    => 'http://github.com/Test-More/test-more/issues',
       'Test2::Event::Plan'    => 'http://github.com/Test-More/test-more/issues',
       'Test2::Event::Skip'    => 'http://github.com/Test-More/test-more/issues',
       'Test2::Event::Subtest' => 'http://github.com/Test-More/test-more/issues',
       'Test2::Event::TAP::Version'=> 'http://github.com/Test-More/test-more/issues',
       'Test2::Event::Waiting' => 'http://github.com/Test-More/test-more/issues',
+      'Test2::EventFacet'     => 'http://github.com/Test-More/test-more/issues',
+      'Test2::EventFacet::About'=> 'http://github.com/Test-More/test-more/issues',
+      'Test2::EventFacet::Amnesty'=> 'http://github.com/Test-More/test-more/issues',
+      'Test2::EventFacet::Assert'=> 'http://github.com/Test-More/test-more/issues',
+      'Test2::EventFacet::Control'=> 'http://github.com/Test-More/test-more/issues',
+      'Test2::EventFacet::Error'=> 'http://github.com/Test-More/test-more/issues',
+      'Test2::EventFacet::Info'=> 'http://github.com/Test-More/test-more/issues',
+      'Test2::EventFacet::Meta'=> 'http://github.com/Test-More/test-more/issues',
+      'Test2::EventFacet::Parent'=> 'http://github.com/Test-More/test-more/issues',
+      'Test2::EventFacet::Plan'=> 'http://github.com/Test-More/test-more/issues',
+      'Test2::EventFacet::Trace'=> 'http://github.com/Test-More/test-more/issues',
       'Test2::Formatter'      => 'http://github.com/Test-More/test-more/issues',
       'Test2::Formatter::TAP' => 'http://github.com/Test-More/test-more/issues',
       'Test2::Hub'            => 'http://github.com/Test-More/test-more/issues',
@@ -26313,6 +32244,7 @@ $fatpacked{"Module/CoreList.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"\n".<<
       'Test2::Tools::Tiny'    => 'http://github.com/Test-More/test-more/issues',
       'Test2::Util'           => 'http://github.com/Test-More/test-more/issues',
       'Test2::Util::ExternalMeta'=> 'http://github.com/Test-More/test-more/issues',
+      'Test2::Util::Facets2Legacy'=> 'http://github.com/Test-More/test-more/issues',
       'Test2::Util::HashBase' => 'http://github.com/Test-More/test-more/issues',
       'Test2::Util::Trace'    => 'http://github.com/Test-More/test-more/issues',
       'Test::Builder'         => 'http://github.com/Test-More/test-more/issues',
@@ -26404,9 +32336,7 @@ $fatpacked{"Module/CoreList/TieHashDelta.pm"} = '#line '.(1+__LINE__).' "'.__FIL
   # For internal Module::CoreList use only.
   package Module::CoreList::TieHashDelta;
   use strict;
-  use vars qw($VERSION);
-  
-  $VERSION = '5.20170530';
+  our $VERSION = '5.20180120';
   
   sub TIEHASH {
       my ($class, $changed, $removed, $parent) = @_;
@@ -26487,10 +32417,10 @@ $fatpacked{"Module/CoreList/Utils.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"
   
   use strict;
   use warnings;
-  use vars qw[$VERSION %utilities];
   use Module::CoreList;
   
-  $VERSION = '5.20170530';
+  our $VERSION = '5.20180120';
+  our %utilities;
   
   sub utilities {
       my $perl = shift;
@@ -27743,6 +33673,97 @@ $fatpacked{"Module/CoreList/Utils.pm"} = '#line '.(1+__LINE__).' "'.__FILE__."\"
       },
       5.026000 => {
           delta_from => 5.025012,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.027000 => {
+          delta_from => 5.026000,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.027001 => {
+          delta_from => 5.027000,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.022004 => {
+          delta_from => 5.022003,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.024002 => {
+          delta_from => 5.024001,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.027002 => {
+          delta_from => 5.027001,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.027003 => {
+          delta_from => 5.027002,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.027004 => {
+          delta_from => 5.027003,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.024003 => {
+          delta_from => 5.024002,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.026001 => {
+          delta_from => 5.026000,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.027005 => {
+          delta_from => 5.027004,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.027006 => {
+          delta_from => 5.027005,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.027007 => {
+          delta_from => 5.027006,
+          changed => {
+          },
+          removed => {
+          }
+      },
+      5.027008 => {
+          delta_from => 5.027007,
           changed => {
           },
           removed => {
@@ -30524,7 +36545,7 @@ use Dist::Surveyor;
 use Dist::Surveyor::Inquiry; # internal
 use Dist::Surveyor::MakeCpan;
 
-our $VERSION = '0.020';
+our $VERSION = '0.022';
 
 use constant PROGNAME => 'dist_surveyor';
 
