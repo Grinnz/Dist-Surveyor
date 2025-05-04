@@ -1,6 +1,7 @@
 Revision history for Dist-Surveyor
 
 {{$NEXT}}
+    - Update LICENSE text
 
 0.021     2018-01-21 13:45:53-05:00 America/New_York
 	- Fix get_release_info to return the correct data structure from the MetaCPAN API
